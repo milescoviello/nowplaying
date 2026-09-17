@@ -49,6 +49,12 @@ PlasmoidItem {
     // The daemon decides when idle content takes over (no player, or paused
     // long enough) -- don't re-derive that rule here.
     property bool idleActive: false
+    // Middle-click pin: force the homelab readout even while music plays.
+    // Persisted, so it survives a plasmashell restart.
+    readonly property bool pinFleet: plasmoid.configuration.pinFleet
+    // Either the daemon decided to take over, or the user pinned it.
+    readonly property bool showFleet:
+        !stale && idleKind.length > 0 && (idleActive || pinFleet)
 
     property int lineIndex: -1
     property real nowPos: 0
@@ -62,7 +68,7 @@ PlasmoidItem {
     readonly property string trackLabel:
         hasTrack ? (artist.length ? artist + " — " + title : title) : ""
     readonly property bool showLyrics:
-        !stale && !idleActive && lyrics.length > 0
+        !stale && !idleActive && !pinFleet && lyrics.length > 0
 
     function lineAt(i) {
         if (!lyrics || i < 0 || i >= lyrics.length) return "";
@@ -74,6 +80,7 @@ PlasmoidItem {
 
     toolTipMainText: hasTrack ? trackLabel : "nowplaying"
     toolTipSubText: {
+        if (pinFleet) return "pinned to homelab stats — middle-click to unpin";
         if (stale) return "daemon not running";
         if (hasTrack && lyrics.length === 0)
             return daemonMessage.length ? daemonMessage : "no synced lyrics";
@@ -193,6 +200,17 @@ PlasmoidItem {
         Layout.maximumWidth: tickerWidth
         Layout.fillHeight: true
 
+        // Middle-click anywhere on the widget toggles the pin. Only the middle
+        // button is accepted, so left/right clicks still reach the panel.
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.MiddleButton
+            onClicked: {
+                plasmoid.configuration.pinFleet = !plasmoid.configuration.pinFleet;
+                plasmoid.configuration.writeConfig();
+            }
+        }
+
         Component.onCompleted: {
             root._snap = function() {
                 slideAnim.stop();
@@ -248,7 +266,7 @@ PlasmoidItem {
                 // generic media icon. isMask lets the theme tint it, which is
                 // how the red "something is down" state comes for free.
                 readonly property bool showingFleet:
-                    !root.stale && root.idleActive && root.idleKind === "fleet"
+                    root.showFleet && root.idleKind === "fleet"
 
                 Kirigami.Icon {
                     anchors.centerIn: parent
@@ -329,8 +347,7 @@ PlasmoidItem {
                 // same two-row shape the lyrics use.
                 Column {
                     anchors.fill: parent
-                    visible: !col.visible && root.idleActive
-                             && root.idleKind.length > 0 && !root.stale
+                    visible: !col.visible && root.showFleet
 
                     PlasmaComponents.Label {
                         width: viewport.width
@@ -362,8 +379,7 @@ PlasmoidItem {
                     verticalAlignment: Text.AlignVCenter
                     elide: Text.ElideRight
                     opacity: 0.6
-                    visible: !col.visible && (root.stale
-                             || !root.idleActive || root.idleKind.length === 0)
+                    visible: !col.visible && !root.showFleet
                     font.pixelSize: Math.max(9, viewport.rowH * 0.70)
                     text: {
                         if (root.stale) return "nowplaying: not running";

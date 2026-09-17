@@ -293,8 +293,14 @@ class Daemon:
                 self._set_status("error", str(exc))
             await self.broadcast()
 
-    async def _refresh_idle(self) -> None:
-        """Fill the idle display with homelab health (cached, polled slowly)."""
+    async def _refresh_idle(self, activate: bool = True) -> None:
+        """Keep the homelab readout current (fleet.poll is cached, so calling
+        this often is nearly free).
+
+        The content is refreshed even while music is playing, because the panel
+        widget can be pinned to show it instead of lyrics -- it needs something
+        to show the moment the user asks.
+        """
         loop = asyncio.get_running_loop()
         try:
             status = await loop.run_in_executor(None, fleet.poll)
@@ -305,13 +311,13 @@ class Daemon:
         s.idle_kind = "fleet"
         s.idle_line1, s.idle_line2 = status.summary()
         s.idle_ok = status.healthy
-        s.idle_active = True
+        if activate:
+            s.idle_active = True
 
     def _clear_idle(self) -> None:
-        s = self.state
-        s.idle_kind = s.idle_line1 = s.idle_line2 = ""
-        s.idle_ok = True
-        s.idle_active = False
+        # Retract only the daemon's own takeover; keep the content so a pinned
+        # widget still has something to display.
+        self.state.idle_active = False
 
     async def _apply_mpris(self, now: mpris.Now) -> None:
         """Drive state from a player's own metadata -- no audio capture.
@@ -386,6 +392,7 @@ class Daemon:
         s.playing = now.playing
         s.confidence = "player"
         s.status = "playing" if now.playing else "paused"
+        await self._refresh_idle(activate=False)
 
         # A brief pause keeps the lyrics; a long one hands the widget over.
         if now.playing:

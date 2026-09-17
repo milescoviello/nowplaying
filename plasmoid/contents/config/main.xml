@@ -14,5 +14,9 @@
       place by the time it is sung</label>
       <default>300</default>
     </entry>
+    <entry name="pinFleet" type="Bool">
+      <label>Middle-click pin: always show homelab stats instead of lyrics</label>
+      <default>false</default>
+    </entry>
   </group>
 </kcfg>
