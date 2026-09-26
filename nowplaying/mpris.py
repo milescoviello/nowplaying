@@ -128,16 +128,9 @@ def players() -> list[str]:
     return [p.strip() for p in (out or "").splitlines() if p.strip()]
 
 
-def poll(player: str | None = None) -> Now | None:
-    """Current state, or None when no player is publishing anything usable."""
-    args = ["metadata", "--format", FORMAT]
-    if player:
-        args = ["--player", player, *args]
-    out = _run(args)
-    if not out:
-        return None
+def _parse(line: str) -> Now | None:
     # Players may omit trailing fields entirely; pad rather than reject.
-    parts = (out.split(SEP) + [""] * 7)[:7]
+    parts = (line.split(SEP) + [""] * 7)[:7]
     status, artist, title, album, length, position, art = (p.strip() for p in parts)
 
     def num(v: str) -> float:
@@ -153,3 +146,25 @@ def poll(player: str | None = None) -> Now | None:
     return Now(status=status or "Stopped", artist=artist, title=title,
                album=(album or "").strip(), duration=num(length),
                position=num(position), art_url=art or "")
+
+
+def poll(player: str | None = None) -> Now | None:
+    """Current state, or None when no player is publishing anything usable.
+
+    Left to itself playerctl takes the first player on the bus, so a browser
+    tab paused an hour ago can hide Plexamp playing right now. Ask every
+    player instead, and prefer a real track that is playing over one that
+    is paused.
+    """
+    args = ["metadata", "--format", FORMAT]
+    args = ["--player", player, *args] if player else ["--all-players", *args]
+    out = _run(args)
+    if not out:
+        return None
+    found = [n for n in map(_parse, out.splitlines()) if n is not None]
+
+    def rank(n: Now) -> int:
+        live = n.usable and n.status.lower() != "stopped"
+        return 0 if live and n.playing else 1 if live else 2
+
+    return min(found, key=rank, default=None)
