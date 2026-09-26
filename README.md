@@ -5,8 +5,8 @@ listening to** through your taskbar, line by line, in time with the music — an
 shows **homelab health** when nothing is playing.
 
 ```
-♪  I heard there was a secret chord          ← the line being sung
-   that David played and it pleased the Lord ← the line coming next
+♪  I tried so hard and got so far          ← the line being sung
+   but in the end, it doesn't even matter  ← the line coming next
 ```
 
 ```
