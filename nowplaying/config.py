@@ -59,6 +59,9 @@ RESYNC_TOLERANCE = 3.0   # |predicted - measured| under this = clock is fine
 
 # --- lyrics ------------------------------------------------------------------
 LRCLIB_BASE = "https://lrclib.net/api"
+# LRCLIB gains lyrics over time, so a miss is only remembered for a day --
+# long enough that replaying an album doesn't re-ask for every track.
+LYRICS_MISS_TTL = 24 * 3600
 # Album art is kept on disk so a repeat play paints instantly; past this the
 # least recently shown covers are dropped.
 COVER_CACHE_MB = 50

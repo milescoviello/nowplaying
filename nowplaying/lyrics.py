@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -94,17 +95,24 @@ def fetch(artist: str, title: str, album: str = "", duration: float | None = Non
     if use_cache and cache_file.exists():
         try:
             cached = json.loads(cache_file.read_text())
-            return Lyrics(
-                lines=[(float(t), s) for t, s in cached.get("lines", [])],
-                synced=cached.get("synced", False),
-                source=cached.get("source", "cache"),
-                plain=cached.get("plain", ""),
-                duration=float(cached.get("duration") or 0.0),
-            )
-        except (OSError, ValueError):
+            if not cached.get("miss"):
+                return Lyrics(
+                    lines=[(float(t), s) for t, s in cached.get("lines", [])],
+                    synced=cached.get("synced", False),
+                    source=cached.get("source", "cache"),
+                    plain=cached.get("plain", ""),
+                    duration=float(cached.get("duration") or 0.0),
+                )
+            if time.time() - float(cached.get("checked_at") or 0) < config.LYRICS_MISS_TTL:
+                return Lyrics(source=cached.get("source", ""),
+                              duration=float(cached.get("duration") or 0.0))
+        except (OSError, ValueError, TypeError):
             pass
 
     result = Lyrics()
+    # Only a definite "not there" may be remembered as a miss -- never a
+    # timeout or an outage, or one bad minute would hide lyrics for a day.
+    answered = True
     # Exact match first -- LRCLIB matches on duration, which disambiguates
     # remasters and live versions.
     params = {"artist_name": artist, "track_name": title}
@@ -115,8 +123,10 @@ def fetch(artist: str, title: str, album: str = "", duration: float | None = Non
     try:
         result = _from_payload(_get_json(
             f"{config.LRCLIB_BASE}/get?" + urllib.parse.urlencode(params)))
-    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
-        result = Lyrics()
+    except urllib.error.HTTPError as exc:
+        answered = exc.code == 404
+    except (urllib.error.URLError, OSError, ValueError):
+        answered = False
 
     if not result.available:
         # Fall back to a fuzzy search and pick the closest duration. When the
@@ -132,18 +142,24 @@ def fetch(artist: str, title: str, album: str = "", duration: float | None = Non
                     delta = abs((h.get("duration") or 0) - (duration or 0)) if duration else 0
                     return (has_sync, delta)
                 result = _from_payload(sorted(hits, key=score)[0])
-        except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
-            pass
+        except (urllib.error.URLError, OSError, ValueError):
+            answered = False
 
     if result.available:
-        try:
-            cache_file.write_text(json.dumps({
-                "lines": result.lines,
-                "synced": result.synced,
-                "source": result.source,
-                "plain": result.plain,
-                "duration": result.duration,
-            }))
-        except OSError:
-            pass
+        entry = {
+            "lines": result.lines,
+            "synced": result.synced,
+            "source": result.source,
+            "plain": result.plain,
+            "duration": result.duration,
+        }
+    elif answered:
+        entry = {"miss": True, "checked_at": time.time(),
+                 "source": result.source, "duration": result.duration}
+    else:
+        return result
+    try:
+        cache_file.write_text(json.dumps(entry))
+    except OSError:
+        pass
     return result

@@ -171,7 +171,9 @@ class Daemon:
         # progress readout and for noticing when the track has run out.
         if result.duration:
             s.duration = result.duration
-        if not result.available:
+        if result.source == "lrclib-instrumental":
+            s.message = "instrumental"
+        elif not result.available:
             s.message = "no lyrics found on LRCLIB"
         elif not result.synced:
             s.message = "unsynced lyrics only"
