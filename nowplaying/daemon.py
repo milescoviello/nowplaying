@@ -36,6 +36,8 @@ class Daemon:
         # waiting on a second opinion before we act on it.
         self._pending_resync: tuple[float, float] | None = None
         self._resume_check = False
+        # Artwork + lyrics for the current MPRIS track, fetched off the loop.
+        self._load_task: asyncio.Task | None = None
 
     # --- client plumbing -----------------------------------------------------
     async def _handle_client(self, reader: asyncio.StreamReader,
@@ -151,11 +153,14 @@ class Daemon:
                 total -= st.st_size
 
     async def _load_cover(self, url: str) -> None:
+        key = self.state.key
         loop = asyncio.get_running_loop()
-        self.state.cover_file = await loop.run_in_executor(
-            None, self._download_cover, url)
+        path = await loop.run_in_executor(None, self._download_cover, url)
+        if self.state.key == key:   # skipped while downloading: not ours now
+            self.state.cover_file = path
 
     async def _load_lyrics(self, match: Match) -> None:
+        key = self.state.key
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
@@ -163,6 +168,8 @@ class Daemon:
                                      self.state.duration or None),
         )
         s = self.state
+        if s.key != key:
+            return
         s.lyrics = result.lines
         s.lyrics_synced = result.synced
         s.lyrics_plain = result.plain
@@ -360,35 +367,13 @@ class Daemon:
             s.key = "mpris:" + now.key
             s.source_label = "player metadata (mpris)"
             log.info("mpris track: %s - %s", now.artist or "?", now.title)
-
-            # MPRIS from a browser carries no album or artwork; fill them in.
-            loop = asyncio.get_running_loop()
-            info = await loop.run_in_executor(
-                None, lambda: enrich.lookup(now.artist, now.title))
-            art_url = now.art_url
-            if info and info.usable:
-                s.artist = info.artist or s.artist
-                s.album = info.album or s.album
-                s.title = info.title or s.title
-                art_url = info.art_url or art_url
-                if info.duration and not now.duration:
-                    s.duration = info.duration
-                s.source_label = f"player metadata + {info.source}"
-                log.info("enriched via %s: %s - %s [%s]",
-                         info.source, s.artist, s.title, s.album)
-
-            if art_url.startswith(("http://", "https://")):
-                await self._load_cover(art_url)
-            elif art_url.startswith("file://"):
-                s.cover_file = art_url[7:]
-            if now.duration:
-                s.duration = now.duration
-            await self.broadcast()
-            # Library titles carry suffixes like "(remastered 2024)" that make
-            # LRCLIB fall back to an unsynced match; display them, but look
-            # up the bare title.
-            await self._load_lyrics(Match(key=s.key, title=mpris.clean_title(s.title),
-                                          artist=s.artist, album=s.album))
+            # Artwork and lyrics take a second or more to fetch, and a slow
+            # LRCLIB far longer. Fetch them off the poll loop, so a skip made
+            # meanwhile is still seen on the next poll -- and drop the fetch
+            # for a track that has already been skipped past.
+            if self._load_task is not None:
+                self._load_task.cancel()
+            self._load_task = asyncio.create_task(self._load_track(now))
         if now.duration:
             s.duration = now.duration
 
@@ -431,6 +416,46 @@ class Daemon:
                 await self._refresh_idle()
             elif s.idle_active:
                 self._clear_idle()
+
+    async def _load_track(self, now: mpris.Now) -> None:
+        """Album, artwork and lyrics for the track the player just announced."""
+        s = self.state
+        key = s.key
+        try:
+            # MPRIS from a browser carries no album or artwork; fill them in.
+            loop = asyncio.get_running_loop()
+            info = await loop.run_in_executor(
+                None, lambda: enrich.lookup(now.artist, now.title))
+            if s.key != key:
+                return
+            art_url = now.art_url
+            if info and info.usable:
+                s.artist = info.artist or s.artist
+                s.album = info.album or s.album
+                s.title = info.title or s.title
+                art_url = info.art_url or art_url
+                if info.duration and not now.duration:
+                    s.duration = info.duration
+                s.source_label = f"player metadata + {info.source}"
+                log.info("enriched via %s: %s - %s [%s]",
+                         info.source, s.artist, s.title, s.album)
+
+            if art_url.startswith(("http://", "https://")):
+                await self._load_cover(art_url)
+            elif art_url.startswith("file://"):
+                s.cover_file = art_url[7:]
+            if s.key != key:
+                return
+            await self.broadcast()
+            # Library titles carry suffixes like "(remastered 2024)" that make
+            # LRCLIB fall back to an unsynced match; display them, but look
+            # up the bare title.
+            await self._load_lyrics(Match(key=key, title=mpris.clean_title(s.title),
+                                          artist=s.artist, album=s.album))
+            if s.key == key:
+                await self.broadcast()
+        except Exception:
+            log.exception("loading track details failed")
 
     async def _tick(self) -> None:
         # Prefer a player's own metadata: costs no capture, so nothing trips
@@ -530,6 +555,8 @@ class Daemon:
         finally:
             loop_task.cancel()
             heartbeat.cancel()
+            if self._load_task is not None:
+                self._load_task.cancel()
             self._stop_stream()
             with contextlib.suppress(OSError):
                 sock.unlink()
