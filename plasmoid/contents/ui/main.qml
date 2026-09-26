@@ -6,8 +6,9 @@
  * on top, the line coming next below it. Each new line slides in from the
  * bottom, timed off the track position rather than a fixed speed.
  *
- * Left-click opens a popup with the whole lyrics sheet. The daemon still
- * decides everything; the popup only renders the same state.
+ * Left-click opens a popup with the whole lyrics sheet and the player's
+ * controls. The daemon still decides everything; the popup only renders the
+ * same state and hands play/pause/next to playerctl.
  */
 import QtCore
 import QtQuick
@@ -43,6 +44,10 @@ PlasmoidItem {
     property string title: ""
     property string album: ""
     property string coverFile: ""
+    property real duration: 0
+    // Empty when nothing local is playing the track (a Plex client on another
+    // device): there is nobody to send controls to, so the popup hides them.
+    property string player: ""
     // Only set when there are no timings: the popup shows it as a sheet.
     property string lyricsPlain: ""
     property real anchorPos: 0
@@ -120,6 +125,8 @@ PlasmoidItem {
         artist = d.artist || "";
         title = d.title || "";
         album = d.album || "";
+        duration = d.duration || 0;
+        player = d.player || "";
         anchorPos = d.anchor_pos || 0;
         anchorWall = d.anchor_wall || 0;
         playing = !!d.playing;
@@ -202,9 +209,39 @@ PlasmoidItem {
     function snapColumn() { if (_snap) _snap(); }
     function slideColumn() { if (_slide) _slide(); }
 
+    // Transport commands, one-shot: dropped once playerctl exits. The daemon
+    // notices the change on its next poll, so no state is touched here.
+    Plasma5Support.DataSource {
+        id: runner
+        engine: "executable"
+        onNewData: function(sourceName) {
+            disconnectSource(sourceName);
+        }
+    }
+
+    function shellQuote(s) {
+        return "'" + s.replace(/'/g, "'\\''") + "'";
+    }
+
+    function control(verb) {
+        if (!player.length) return;
+        runner.connectSource("playerctl --player " + shellQuote(player) + " " + verb);
+    }
+
+    function clockText(seconds) {
+        var t = Math.max(0, Math.floor(seconds));
+        var h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60;
+        var ss = (s < 10 ? "0" : "") + s;
+        return h > 0 ? h + ":" + (m < 10 ? "0" : "") + m + ":" + ss
+                     : m + ":" + ss;
+    }
+
     Timer {  // drives the current line, the slide and the sideways creep
         interval: 20
-        running: root.playing && root.lyrics.length > 0 && !root.stale
+        // Also while the popup is open: its progress bar needs a moving
+        // position even when there are no lyrics to time.
+        running: root.playing && !root.stale
+            && (root.lyrics.length > 0 || root.expanded)
         repeat: true
         triggeredOnStart: true
         onTriggered: root.refreshLine()
@@ -502,6 +539,72 @@ PlasmoidItem {
                         textFormat: Text.PlainText
                         elide: Text.ElideRight
                         opacity: 0.7
+                    }
+                }
+            }
+        }
+
+        footer: PlasmaExtras.PlasmoidHeading {
+            position: PlasmaComponents.ToolBar.Footer
+            visible: popup.live
+
+            contentItem: ColumnLayout {
+                spacing: Kirigami.Units.smallSpacing
+
+                RowLayout {
+                    spacing: Kirigami.Units.smallSpacing
+
+                    // Tabular figures, so the bar doesn't twitch as digits change.
+                    PlasmaComponents.Label {
+                        text: root.clockText(root.duration > 0
+                            ? Math.min(root.nowPos, root.duration) : root.nowPos)
+                        font.features: ({ "tnum": 1 })
+                        opacity: 0.7
+                    }
+                    PlasmaComponents.ProgressBar {
+                        Layout.fillWidth: true
+                        // An unknown length has nothing to be a fraction of.
+                        visible: root.duration > 0
+                        from: 0
+                        to: Math.max(1, root.duration)
+                        value: root.nowPos
+                    }
+                    Item {
+                        Layout.fillWidth: true
+                        visible: root.duration <= 0
+                    }
+                    PlasmaComponents.Label {
+                        visible: root.duration > 0
+                        text: root.clockText(root.duration)
+                        font.features: ({ "tnum": 1 })
+                        opacity: 0.7
+                    }
+                }
+
+                // Only when there's a local player to obey them: a Plex client
+                // on another device is out of playerctl's reach.
+                RowLayout {
+                    Layout.alignment: Qt.AlignHCenter
+                    visible: root.player.length > 0
+                    spacing: Kirigami.Units.largeSpacing
+
+                    PlasmaComponents.ToolButton {
+                        icon.name: "media-skip-backward"
+                        Accessible.name: "Previous track"
+                        onClicked: root.control("previous")
+                    }
+                    PlasmaComponents.ToolButton {
+                        icon.name: root.playing ? "media-playback-pause"
+                                                : "media-playback-start"
+                        icon.width: Kirigami.Units.iconSizes.medium
+                        icon.height: Kirigami.Units.iconSizes.medium
+                        Accessible.name: root.playing ? "Pause" : "Play"
+                        onClicked: root.control("play-pause")
+                    }
+                    PlasmaComponents.ToolButton {
+                        icon.name: "media-skip-forward"
+                        Accessible.name: "Next track"
+                        onClicked: root.control("next")
                     }
                 }
             }

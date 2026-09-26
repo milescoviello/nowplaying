@@ -14,9 +14,10 @@ shows **homelab health** when nothing is playing.
    homelab healthy
 ```
 
-Left-click it for the whole lyrics sheet in a popup, with the album art on top
-and the line being sung highlighted and followed. Middle-click pins the homelab
-readout over the lyrics until you middle-click again.
+Left-click it for the whole lyrics sheet in a popup, with the album art on top,
+the line being sung highlighted and followed, and previous / play-pause / next
+with a progress bar underneath. Middle-click pins the homelab readout over the
+lyrics until you middle-click again.
 
 ## How it works
 
