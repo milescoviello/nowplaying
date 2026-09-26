@@ -114,6 +114,8 @@ class Daemon:
         name = hashlib.sha256(url.encode()).hexdigest()[:32] + ".jpg"
         dest = config.covers_dir() / name
         if dest.exists() and dest.stat().st_size > 0:
+            with contextlib.suppress(OSError):
+                dest.touch()   # mtime = last shown, for pruning
             return str(dest)
         try:
             req = urllib.request.Request(
@@ -125,10 +127,28 @@ class Daemon:
             tmp = dest.with_suffix(".part")
             tmp.write_bytes(data)
             tmp.replace(dest)
-            return str(dest)
         except (urllib.error.URLError, OSError, ValueError) as exc:
             log.debug("cover download failed: %s", exc)
             return ""
+        self._prune_covers()
+        return str(dest)
+
+    @staticmethod
+    def _prune_covers() -> None:
+        """Drop the least recently shown covers once the cache is over size."""
+        try:
+            files = [(f.stat(), f) for f in config.covers_dir().iterdir()
+                     if f.is_file()]
+        except OSError:
+            return
+        total = sum(st.st_size for st, _ in files)
+        budget = config.COVER_CACHE_MB * 1024 * 1024
+        for st, f in sorted(files, key=lambda x: x[0].st_mtime):
+            if total <= budget:
+                break
+            with contextlib.suppress(OSError):
+                f.unlink()
+                total -= st.st_size
 
     async def _load_cover(self, url: str) -> None:
         loop = asyncio.get_running_loop()
@@ -498,6 +518,7 @@ class Daemon:
         server = await asyncio.start_unix_server(self._handle_client, path=str(sock))
         config.pid_path().write_text(str(os.getpid()))
         log.info("listening on %s", sock)
+        await asyncio.get_running_loop().run_in_executor(None, self._prune_covers)
         self._set_status("idle", "starting up")
         loop_task = asyncio.create_task(self.run_loop())
         heartbeat = asyncio.create_task(self._heartbeat())

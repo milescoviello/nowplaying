@@ -81,7 +81,11 @@ def from_plex() -> Info | None:
         if m.get("type") != "track":
             continue
         thumb = m.get("thumb") or m.get("parentThumb") or ""
-        art = (f"{url}{thumb}?X-Plex-Token={token}" if thumb else "")
+        # Ask Plex to scale it: the original can be a 4000px, 20 MB scan,
+        # for an image the panel draws at icon size.
+        art = (f"{url}/photo/:/transcode?" + urllib.parse.urlencode({
+            "width": 600, "height": 600, "minSize": 1, "upscale": 0,
+            "url": thumb, "X-Plex-Token": token}) if thumb else "")
         player = m.get("Player") or {}
         return Info(
             # grandparentTitle is the *album* artist -- "Various Artists" on a

@@ -249,7 +249,7 @@ PlasmoidItem {
                     source: root.coverFile.length
                         ? "file://" + root.coverFile
                         : ""
-                    // Downloaded at 400x400; let Qt scale it once, smoothly.
+                    // Downloaded at up to 600x600; let Qt scale it once, smoothly.
                     sourceSize.width: artSlot.side * 2
                     sourceSize.height: artSlot.side * 2
                     fillMode: Image.PreserveAspectCrop

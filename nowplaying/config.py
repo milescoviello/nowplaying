@@ -59,6 +59,9 @@ RESYNC_TOLERANCE = 3.0   # |predicted - measured| under this = clock is fine
 
 # --- lyrics ------------------------------------------------------------------
 LRCLIB_BASE = "https://lrclib.net/api"
+# Album art is kept on disk so a repeat play paints instantly; past this the
+# least recently shown covers are dropped.
+COVER_CACHE_MB = 50
 USER_AGENT = "nowplaying/0.1 (personal use; https://lrclib.net)"
 HTTP_TIMEOUT = 10.0
 
