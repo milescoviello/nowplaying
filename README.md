@@ -16,8 +16,10 @@ shows **homelab health** when nothing is playing.
 
 Left-click it for the whole lyrics sheet in a popup, with the album art on top,
 the line being sung highlighted and followed, and previous / play-pause / next
-with a progress bar underneath. Middle-click pins the homelab readout over the
-lyrics until you middle-click again.
+with a progress bar underneath. At the bottom, a switch picks where the track
+comes from: the player's own metadata, or listening to the speaker output or
+the mic ([Choosing the source](#choosing-the-source)). Middle-click pins the
+homelab readout over the lyrics until you middle-click again.
 
 ## How it works
 

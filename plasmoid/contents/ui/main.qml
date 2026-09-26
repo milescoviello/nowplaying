@@ -37,6 +37,11 @@ PlasmoidItem {
             .toString().replace("file://", "")
         + "/nowplaying/state.json"
     readonly property string readCommand: "cat " + statePath
+    // Where a source picked in the popup is saved for the daemon to pick up.
+    readonly property string configDir:
+        StandardPaths.writableLocation(StandardPaths.GenericConfigLocation)
+            .toString().replace("file://", "")
+        + "/nowplaying"
 
     property var lyrics: []
     // The same lines in their own script, when the daemon spelled them out in
@@ -55,6 +60,11 @@ PlasmoidItem {
     // Empty when nothing local is playing the track (a Plex client on another
     // device): there is nobody to send controls to, so the popup hides them.
     property string player: ""
+    // The source the daemon reports it is using -- what the switch shows.
+    property string sourcePref: ""
+    // The last pick, until the daemon either reports it or gives up waiting.
+    property string requestedSource: ""
+    onSourcePrefChanged: if (sourcePref === requestedSource) requestedSource = ""
     // Only set when there are no timings: the popup shows it as a sheet.
     property string lyricsPlain: ""
     property real anchorPos: 0
@@ -134,6 +144,7 @@ PlasmoidItem {
         album = d.album || "";
         duration = d.duration || 0;
         player = d.player || "";
+        sourcePref = d.source_pref || "";
         anchorPos = d.anchor_pos || 0;
         anchorWall = d.anchor_wall || 0;
         playing = !!d.playing;
@@ -234,6 +245,26 @@ PlasmoidItem {
     function control(verb) {
         if (!player.length) return;
         runner.connectSource("playerctl --player " + shellQuote(player) + " " + verb);
+    }
+
+    // Saved rather than sent: the daemon has no channel QML can speak, and a
+    // file outlives a restart. Written whole and renamed into place, so the
+    // daemon never reads half a word.
+    function pickSource(value) {
+        if (value === sourcePref) return;
+        var dir = shellQuote(configDir);
+        runner.connectSource("mkdir -p " + dir
+            + " && printf %s " + shellQuote(value) + " > " + dir + "/source.tmp"
+            + " && mv " + dir + "/source.tmp " + dir + "/source");
+        requestedSource = value;
+        sourceTimeout.restart();
+    }
+
+    Timer {
+        id: sourceTimeout
+        // Longer than the daemon's slowest tick, a fingerprint lookup.
+        interval: 15000
+        onTriggered: root.requestedSource = ""
     }
 
     function clockText(seconds) {
@@ -572,12 +603,15 @@ PlasmoidItem {
 
         footer: PlasmaExtras.PlasmoidHeading {
             position: PlasmaComponents.ToolBar.Footer
-            visible: popup.live
+            // Not just while a track plays: nothing playing is exactly when
+            // someone reaches for a different source.
+            visible: !root.stale && (popup.live || root.sourcePref.length > 0)
 
             contentItem: ColumnLayout {
                 spacing: Kirigami.Units.smallSpacing
 
                 RowLayout {
+                    visible: popup.live
                     spacing: Kirigami.Units.smallSpacing
 
                     // Tabular figures, so the bar doesn't twitch as digits change.
@@ -611,7 +645,7 @@ PlasmoidItem {
                 // on another device is out of playerctl's reach.
                 RowLayout {
                     Layout.alignment: Qt.AlignHCenter
-                    visible: root.player.length > 0
+                    visible: popup.live && root.player.length > 0
                     spacing: Kirigami.Units.largeSpacing
 
                     PlasmaComponents.ToolButton {
@@ -631,6 +665,78 @@ PlasmoidItem {
                         icon.name: "media-skip-forward"
                         Accessible.name: "Next track"
                         onClicked: root.control("next")
+                    }
+                }
+
+                Kirigami.Separator {
+                    Layout.fillWidth: true
+                    visible: popup.live && sourceRow.visible
+                }
+
+                // Where the daemon gets the track from. A button is checked
+                // when the daemon says so, never on the click itself, so a
+                // switch that didn't take is plain to see.
+                RowLayout {
+                    id: sourceRow
+                    Layout.alignment: Qt.AlignHCenter
+                    // An older daemon doesn't publish its source.
+                    visible: root.sourcePref.length > 0
+                    spacing: 0
+
+                    PlasmaComponents.Label {
+                        rightPadding: Kirigami.Units.smallSpacing
+                        text: "Source"
+                        opacity: 0.7
+                    }
+                    Repeater {
+                        model: [
+                            { value: "mpris", label: "Player",
+                              hint: "Player metadata only. Nothing is recorded." },
+                            { value: "auto", label: "Auto",
+                              hint: "Player metadata when a player has it, else "
+                                    + "listens: speaker output or the mic." },
+                            { value: "loopback", label: "Speaker",
+                              hint: "Identify whatever this machine is playing "
+                                    + "by listening to its output." },
+                            { value: "mic", label: "Mic",
+                              hint: "Identify whatever is playing in the room "
+                                    + "through the microphone." },
+                        ]
+                        delegate: PlasmaComponents.ToolButton {
+                            text: modelData.label
+                            // Not checkable: that would tick it on click,
+                            // before the daemon has agreed to anything.
+                            checked: root.sourcePref === modelData.value
+                            onClicked: root.pickSource(modelData.value)
+                            PlasmaComponents.ToolTip.text: modelData.hint
+                            PlasmaComponents.ToolTip.visible: hovered
+                            PlasmaComponents.ToolTip.delay: Kirigami.Units.toolTipDelay
+                        }
+                    }
+                }
+
+                // The cost of the current choice, spelled out: listening sends
+                // fingerprints to Shazam and lights the recording indicator.
+                PlasmaComponents.Label {
+                    Layout.fillWidth: true
+                    visible: sourceRow.visible
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    font: Kirigami.Theme.smallFont
+                    opacity: 0.7
+                    text: {
+                        if (root.requestedSource.length) return "switching…";
+                        switch (root.sourcePref) {
+                        case "mpris": return "No audio capture.";
+                        case "auto": return "Listens when no player describes the "
+                            + "track: sent to Shazam, recording indicator on.";
+                        case "loopback": return "Listening to the speaker output: "
+                            + "sent to Shazam, recording indicator on.";
+                        case "mic": return "Listening through the mic: sent to "
+                            + "Shazam, recording indicator on.";
+                        default: return "Listening to " + root.sourcePref
+                            + ": sent to Shazam, recording indicator on.";
+                        }
                     }
                 }
             }
