@@ -38,6 +38,9 @@ class Daemon:
         self._resume_check = False
         # Artwork + lyrics for the current MPRIS track, fetched off the loop.
         self._load_task: asyncio.Task | None = None
+        # Set the moment a player announces a change, so a skip doesn't wait
+        # out the rest of a poll interval.
+        self._wake = asyncio.Event()
 
     # --- client plumbing -----------------------------------------------------
     async def _handle_client(self, reader: asyncio.StreamReader,
@@ -466,11 +469,45 @@ class Daemon:
         except Exception:
             log.exception("loading track details failed")
 
+    async def _watch_players(self) -> None:
+        """Wake the poll loop as soon as any player changes track or state.
+
+        Polling alone sees a skip only on its next pass; playerctl --follow
+        hears the MPRIS signal as it happens.
+        """
+        while True:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *mpris.FOLLOW, stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL)
+            except OSError as exc:
+                log.debug("not following players: %s", exc)
+                return
+            try:
+                while await proc.stdout.readline():
+                    self._wake.set()
+            finally:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                await proc.wait()
+            await asyncio.sleep(5)   # it exited; plain polling until it's back
+
+    async def _nap(self, seconds: float) -> None:
+        """Wait for the next poll -- or less, if a player changes first."""
+        try:
+            await asyncio.wait_for(self._wake.wait(), seconds)
+        except TimeoutError:
+            return
+        # Players publish a change in a burst (title, then artist, then art);
+        # let it land rather than poll a half-updated track.
+        await asyncio.sleep(0.15)
+
     async def _tick(self) -> None:
         # Prefer a player's own metadata: costs no capture, so nothing trips
         # the desktop's recording indicator, and the position is exact.
         if self.source_pref in ("mpris", "auto"):
             loop = asyncio.get_running_loop()
+            self._wake.clear()   # this poll covers anything announced so far
             now = await loop.run_in_executor(None, mpris.poll)
             if now is not None and (not now.usable or now.status.lower() == "stopped"):
                 # A stale browser tab publishing a bare page title is worse than
@@ -492,7 +529,7 @@ class Daemon:
                 self._stop_stream()   # something is describing itself; stop listening
                 await self._apply_mpris(now)
                 await self.broadcast()
-                await asyncio.sleep(1.0)
+                await self._nap(1.0)
                 return
             if self.source_pref == "mpris":
                 # No player: stay idle rather than opening the audio device.
@@ -504,7 +541,7 @@ class Daemon:
                     self._set_status("idle", "no player")
                 await self._refresh_idle()
                 await self.broadcast()
-                await asyncio.sleep(2.0)
+                await self._nap(2.0)
                 return
             self._mpris_key = ""
 
@@ -558,12 +595,16 @@ class Daemon:
         self._set_status("idle", "starting up")
         loop_task = asyncio.create_task(self.run_loop())
         heartbeat = asyncio.create_task(self._heartbeat())
+        watcher = (asyncio.create_task(self._watch_players())
+                   if self.source_pref in ("mpris", "auto") else None)
         try:
             async with server:
                 await asyncio.gather(loop_task, heartbeat)
         finally:
             loop_task.cancel()
             heartbeat.cancel()
+            if watcher is not None:
+                watcher.cancel()
             if self._load_task is not None:
                 self._load_task.cancel()
             self._stop_stream()

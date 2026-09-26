@@ -21,6 +21,11 @@ FORMAT = SEP.join([
     "{{mpris:length}}", "{{position}}", "{{mpris:artUrl}}",
 ])
 
+# Printed by playerctl whenever any player's track or status changes. Only
+# used as a signal to poll now -- poll() still decides which player wins.
+FOLLOW = ["playerctl", "--all-players", "--follow", "metadata", "--format",
+          "{{playerName}} {{status}} {{artist}} {{title}}"]
+
 # Leading playback glyphs some players prepend to the title.
 _GLYPHS = re.compile(r"^[\s▶⏸⏹⏯●♪♫‖]+")
 # YouTube's unread-notification count: "(12) Some Video Title".
