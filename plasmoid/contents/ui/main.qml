@@ -5,21 +5,27 @@
  * and scrolls lyrics upward through a strip in the panel: the line being sung
  * on top, the line coming next below it. Each new line slides in from the
  * bottom, timed off the track position rather than a fixed speed.
+ *
+ * Left-click opens a popup with the whole lyrics sheet. The daemon still
+ * decides everything; the popup only renders the same state.
  */
 import QtCore
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Templates as T
 import org.kde.kirigami as Kirigami
 import org.kde.plasma.components as PlasmaComponents
 import org.kde.plasma.core as PlasmaCore
+import org.kde.plasma.extras as PlasmaExtras
 import org.kde.plasma.plasma5support as Plasma5Support
 import org.kde.plasma.plasmoid
 
 PlasmoidItem {
     id: root
 
-    // Always render inline in the panel -- never collapse to an icon.
-    preferredRepresentation: fullRepresentation
+    // The ticker is the compact representation, so it stays inline in the
+    // panel while the full lyrics open in the standard applet popup.
+    preferredRepresentation: compactRepresentation
 
     // QML's XMLHttpRequest refuses to read local files unless the whole session
     // runs with QML_XHR_ALLOW_FILE_READ=1, so the state file is read through
@@ -35,7 +41,10 @@ PlasmoidItem {
     property string status: "idle"
     property string artist: ""
     property string title: ""
+    property string album: ""
     property string coverFile: ""
+    // Only set when there are no timings: the popup shows it as a sheet.
+    property string lyricsPlain: ""
     property real anchorPos: 0
     property real anchorWall: 0
     property bool playing: false
@@ -110,6 +119,7 @@ PlasmoidItem {
         status = d.status || "idle";
         artist = d.artist || "";
         title = d.title || "";
+        album = d.album || "";
         anchorPos = d.anchor_pos || 0;
         anchorWall = d.anchor_wall || 0;
         playing = !!d.playing;
@@ -121,6 +131,9 @@ PlasmoidItem {
         idleLine2 = d.idle_line2 || "";
         idleOk = d.idle_ok !== false;
         idleActive = !!d.idle_active;
+        // Outside the key check: plain text arrives without changing the
+        // (empty) line count, so trackKey would never notice it.
+        lyricsPlain = (d.lyrics && d.lyrics.length) ? "" : (d.lyrics_plain || "");
         if (newKey !== trackKey) {
             trackKey = newKey;
             lyrics = d.lyrics || [];
@@ -198,7 +211,7 @@ PlasmoidItem {
     }
 
     // --- panel strip --------------------------------------------------------
-    fullRepresentation: Item {
+    compactRepresentation: Item {
         id: strip
 
         readonly property int tickerWidth: plasmoid.configuration.tickerWidth
@@ -210,8 +223,19 @@ PlasmoidItem {
         Layout.maximumWidth: tickerWidth
         Layout.fillHeight: true
 
-        // Middle-click anywhere on the widget toggles the pin. Only the middle
-        // button is accepted, so left/right clicks still reach the panel.
+        // Left-click opens the popup. Only the left button is accepted, so
+        // right-click still reaches the panel for its context menu.
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton
+            property bool wasExpanded: false
+            // Read on press: the popup has already closed by the time a click
+            // on the strip lands, so toggling `expanded` would reopen it.
+            onPressed: wasExpanded = root.expanded
+            onClicked: root.expanded = !wasExpanded
+        }
+
+        // Middle-click anywhere on the widget toggles the pin.
         MouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.MiddleButton
@@ -398,6 +422,271 @@ PlasmoidItem {
                         if (root.status === "paused") return "paused";
                         return "nowplaying";
                     }
+                }
+            }
+        }
+    }
+
+    // --- popup --------------------------------------------------------------
+    fullRepresentation: PlasmaExtras.Representation {
+        id: popup
+
+        Layout.minimumWidth: Kirigami.Units.gridUnit * 18
+        Layout.minimumHeight: Kirigami.Units.gridUnit * 18
+        Layout.preferredWidth: Kirigami.Units.gridUnit * 22
+        Layout.preferredHeight: Kirigami.Units.gridUnit * 28
+
+        // A dead daemon's last track is not "now playing"; show nothing of it.
+        readonly property bool live: root.hasTrack && !root.stale
+
+        header: PlasmaExtras.PlasmoidHeading {
+            visible: popup.live
+
+            contentItem: RowLayout {
+                spacing: Kirigami.Units.largeSpacing
+
+                Item {
+                    id: coverSlot
+                    readonly property int side: Kirigami.Units.gridUnit * 4
+                    Layout.preferredWidth: side
+                    Layout.preferredHeight: side
+
+                    Image {
+                        id: cover
+                        anchors.fill: parent
+                        source: root.coverFile.length
+                            ? "file://" + root.coverFile
+                            : ""
+                        sourceSize.width: coverSlot.side * 2
+                        sourceSize.height: coverSlot.side * 2
+                        fillMode: Image.PreserveAspectCrop
+                        smooth: true
+                        asynchronous: true
+                        visible: status === Image.Ready
+                    }
+                    Kirigami.Icon {
+                        anchors.centerIn: parent
+                        width: Kirigami.Units.iconSizes.large
+                        height: width
+                        source: "media-optical-audio"
+                        visible: !cover.visible
+                        opacity: 0.45
+                    }
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignVCenter
+                    spacing: 0
+
+                    PlasmaExtras.Heading {
+                        Layout.fillWidth: true
+                        level: 3
+                        text: root.title
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        maximumLineCount: 2
+                        elide: Text.ElideRight
+                    }
+                    PlasmaComponents.Label {
+                        Layout.fillWidth: true
+                        visible: text.length > 0
+                        text: root.artist
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                    }
+                    PlasmaComponents.Label {
+                        Layout.fillWidth: true
+                        visible: text.length > 0
+                        text: root.album
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        opacity: 0.7
+                    }
+                }
+            }
+        }
+
+        contentItem: Item {
+            id: body
+
+            // Set while the view is moved on the music's behalf, so the
+            // contentY handler can tell that apart from the user scrolling.
+            property bool steering: false
+            property real seenContentHeight: 0
+            readonly property bool holding:
+                flick.moving || syncedView.T.ScrollBar.vertical.pressed
+            // Scrolling away to read ahead shouldn't be yanked back on the
+            // next line: hand the view back to the music a few seconds after
+            // the user lets go.
+            readonly property bool following: !holding && !resumeFollow.running
+
+            // Keep the line being sung 40% of the way down rather than dead
+            // centre: lyrics are read downward, so show more of what's coming.
+            function follow(animate) {
+                followAnim.stop();
+                lines.forceLayout();
+                var item = lineRepeater.itemAt(root.lineIndex);
+                var target = item ? item.y + item.height / 2 - flick.height * 0.4 : 0;
+                target = Math.max(0, Math.min(target, flick.contentHeight - flick.height));
+                if (animate) {
+                    followAnim.to = target;
+                    followAnim.start();
+                } else {
+                    steering = true;
+                    flick.contentY = target;
+                    steering = false;
+                }
+            }
+
+            function userScrolled() {
+                followAnim.stop();
+                resumeFollow.restart();
+            }
+
+            onHoldingChanged: if (holding) userScrolled()
+
+            Timer {
+                id: resumeFollow
+                interval: 4000
+                onTriggered: {
+                    if (body.holding) restart();
+                    else body.follow(true);
+                }
+            }
+
+            Connections {
+                target: root
+                function onLineIndexChanged() {
+                    if (root.expanded && body.following) body.follow(true);
+                }
+                function onExpandedChanged() {
+                    if (!root.expanded) return;
+                    // Reopening always lands on the line being sung.
+                    resumeFollow.stop();
+                    body.follow(false);
+                    plainFlick.contentY = 0;
+                }
+                function onTrackKeyChanged() {
+                    plainFlick.contentY = 0;
+                }
+            }
+
+            NumberAnimation {
+                id: followAnim
+                target: flick
+                property: "contentY"
+                duration: 400
+                easing.type: Easing.OutCubic
+            }
+
+            PlasmaComponents.ScrollView {
+                id: syncedView
+                anchors.fill: parent
+                visible: popup.live && root.lyrics.length > 0
+
+                // The Flickable must be the first child: anything declared
+                // before it makes ScrollView wrap it in a Flickable of its own.
+                Flickable {
+                    id: flick
+                    contentWidth: width
+                    contentHeight: lines.height
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    // Kirigami's wheel handling moves contentY directly, so the
+                    // Flickable never reports it as movement. Any other scroll
+                    // needs the pointer over the view; the music's never does.
+                    HoverHandler {
+                        id: lyricsHover
+                    }
+
+                    onContentYChanged: {
+                        // A relayout (new track, rewrapped line) clamps contentY
+                        // before contentHeightChanged fires; that's not the user.
+                        var relayout = contentHeight !== body.seenContentHeight;
+                        body.seenContentHeight = contentHeight;
+                        if (lyricsHover.hovered && !relayout && !body.steering
+                                && !followAnim.running) {
+                            body.userScrolled();
+                        }
+                    }
+                    onContentHeightChanged: {
+                        body.seenContentHeight = contentHeight;
+                        if (body.following) body.follow(false);
+                    }
+                    onHeightChanged: if (body.following) body.follow(false)
+
+                    Column {
+                        id: lines
+                        width: flick.width
+                        topPadding: Kirigami.Units.largeSpacing
+                        bottomPadding: Kirigami.Units.largeSpacing
+                        spacing: Kirigami.Units.smallSpacing
+
+                        Repeater {
+                            id: lineRepeater
+                            model: root.lyrics
+                            delegate: PlasmaComponents.Label {
+                                readonly property bool isCurrent: index === root.lineIndex
+
+                                width: lines.width
+                                leftPadding: Kirigami.Units.largeSpacing
+                                rightPadding: Kirigami.Units.largeSpacing
+                                horizontalAlignment: Text.AlignHCenter
+                                wrapMode: Text.Wrap
+                                textFormat: Text.PlainText
+                                text: modelData[1] || "♪"
+                                font.weight: isCurrent ? Font.DemiBold : Font.Normal
+                                opacity: isCurrent ? 1.0 : 0.5
+                                Behavior on opacity {
+                                    NumberAnimation { duration: 200 }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // No timings: the sheet as published, from the top. Nothing to
+            // scroll it by, so it stays put.
+            PlasmaComponents.ScrollView {
+                anchors.fill: parent
+                visible: popup.live && !syncedView.visible && root.lyricsPlain.length > 0
+
+                Flickable {
+                    id: plainFlick
+                    contentWidth: width
+                    contentHeight: plainText.height
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    PlasmaComponents.Label {
+                        id: plainText
+                        width: plainFlick.width
+                        padding: Kirigami.Units.largeSpacing
+                        horizontalAlignment: Text.AlignHCenter
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
+                        text: root.lyricsPlain
+                    }
+                }
+            }
+
+            PlasmaExtras.PlaceholderMessage {
+                anchors.centerIn: parent
+                width: parent.width - Kirigami.Units.gridUnit * 4
+                visible: !syncedView.visible && root.lyricsPlain.length === 0
+                iconName: root.stale ? "dialog-warning" : "media-optical-audio"
+                text: {
+                    if (root.stale) return "nowplaying is not running";
+                    if (!root.hasTrack) return "Nothing playing";
+                    // The daemon only says why once the lookup has answered.
+                    return root.daemonMessage.length ? "No lyrics" : "Looking up lyrics…";
+                }
+                explanation: {
+                    if (root.stale) return "The daemon has stopped writing its state.";
+                    if (!root.hasTrack)
+                        return root.status === "searching" ? "listening…" : "";
+                    return root.daemonMessage;
                 }
             }
         }

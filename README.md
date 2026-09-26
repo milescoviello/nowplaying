@@ -14,6 +14,10 @@ shows **homelab health** when nothing is playing.
    homelab healthy
 ```
 
+Left-click it for the whole lyrics sheet in a popup, with the album art on top
+and the line being sung highlighted and followed. Middle-click pins the homelab
+readout over the lyrics until you middle-click again.
+
 ## How it works
 
 A daemon works out what's playing and writes a small JSON state file. The panel
@@ -220,6 +224,7 @@ can other displays. Treat these keys as stable:
 | `lyrics` | `[[seconds, text], ...]`, sorted; in Latin letters when transliterated |
 | `lyrics_original` | same timings in the original script when transliterated, else `[]` |
 | `lyrics_synced` | false = plain text only, no timings |
+| `lyrics_plain` | the whole text without timings, in Latin letters when transliterated |
 | `cover_file` | local path to artwork, or empty |
 | `idle_active` `idle_kind` `idle_line1` `idle_line2` `idle_ok` | idle display |
 
