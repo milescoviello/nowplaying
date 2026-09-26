@@ -19,6 +19,9 @@ SEP = "\x1f"
 FORMAT = SEP.join([
     "{{status}}", "{{artist}}", "{{title}}", "{{album}}",
     "{{mpris:length}}", "{{position}}", "{{mpris:artUrl}}",
+    # The instance ("firefox.instance_1_42"), not the bare name: two browser
+    # windows share a name, and a control sent by name reaches either.
+    "{{playerInstance}}",
 ])
 
 # Printed by playerctl whenever any player's track or status changes. Only
@@ -62,6 +65,7 @@ class Now:
     duration: float   # seconds, 0 when unknown
     position: float   # seconds
     art_url: str
+    player: str = ""  # playerctl instance to send controls to; "" = none local
 
     @property
     def playing(self) -> bool:
@@ -135,8 +139,9 @@ def players() -> list[str]:
 
 def _parse(line: str) -> Now | None:
     # Players may omit trailing fields entirely; pad rather than reject.
-    parts = (line.split(SEP) + [""] * 7)[:7]
-    status, artist, title, album, length, position, art = (p.strip() for p in parts)
+    parts = (line.split(SEP) + [""] * 8)[:8]
+    status, artist, title, album, length, position, art, player = (
+        p.strip() for p in parts)
 
     def num(v: str) -> float:
         try:
@@ -150,7 +155,7 @@ def _parse(line: str) -> Now | None:
         return None
     return Now(status=status or "Stopped", artist=artist, title=title,
                album=(album or "").strip(), duration=num(length),
-               position=num(position), art_url=art or "")
+               position=num(position), art_url=art or "", player=player)
 
 
 def poll(player: str | None = None) -> Now | None:

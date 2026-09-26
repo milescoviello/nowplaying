@@ -106,6 +106,7 @@ class Daemon:
         s.lyrics_synced = False
         s.lyrics_source = ""
         s.duration = 0.0
+        s.player = ""
         s.playing = False
         s.anchor_pos = 0.0
         s.confidence = ""
@@ -395,6 +396,9 @@ class Daemon:
             self._load_task = asyncio.create_task(self._load_track(now))
         if now.duration:
             s.duration = now.duration
+        # Every poll, not just on a new track: the same song can move from one
+        # player to another, and controls must follow it.
+        s.player = now.player
 
         wall = time.time()
         was_playing = s.playing
@@ -562,6 +566,8 @@ class Daemon:
                 await self._nap(2.0)
                 return
             self._mpris_key = ""
+            # Fingerprinting from here on; the last player no longer owns the track.
+            self.state.player = ""
 
         # Read the level out of the rolling buffer -- no new stream, so the
         # recording indicator doesn't flicker.

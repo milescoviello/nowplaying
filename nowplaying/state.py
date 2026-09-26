@@ -24,6 +24,10 @@ class State:
     anchor_wall: float = 0.0      # time.time() when the anchor was taken
     anchor_pos: float = 0.0       # track position (s) at anchor_wall
     duration: float = 0.0         # 0 when unknown
+    # The playerctl instance the track comes from, for UIs that send controls.
+    # Empty when nothing local is playing it (a Plex client on another device,
+    # or audio fingerprinting).
+    player: str = ""
 
     lyrics: list[tuple[float, str]] = field(default_factory=list)
     # Same timings in the original script, when `lyrics` is transliterated.

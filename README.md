@@ -216,6 +216,7 @@ can other displays. Treat these keys as stable:
 | `artist` `title` `album` | current track |
 | `anchor_wall` `anchor_pos` | position anchor — see below |
 | `playing` `duration` | transport state |
+| `player` | playerctl instance playing it, for `playerctl --player`; empty when nothing local is (a Plex client elsewhere, or fingerprinting) |
 | `lyrics` | `[[seconds, text], ...]`, sorted; in Latin letters when transliterated |
 | `lyrics_original` | same timings in the original script when transliterated, else `[]` |
 | `lyrics_synced` | false = plain text only, no timings |
