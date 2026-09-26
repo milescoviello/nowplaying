@@ -5,8 +5,8 @@ listening to** through your taskbar, line by line, in time with the music — an
 shows **homelab health** when nothing is playing.
 
 ```
-♪  I tried so hard and got so far          ← the line being sung
-   but in the end, it doesn't even matter  ← the line coming next
+♪  I watch how the moon sits in the sky in the dark night ← the line being sung
+   Shining with the light from the sun                    ← the line coming next
 ```
 
 ```
