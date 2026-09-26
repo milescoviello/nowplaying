@@ -136,7 +136,8 @@ Lyrics in any other script — Cyrillic, Greek, Korean, Arabic, Thai, Chinese,
 Japanese, … — are then shown spelled out in Latin letters so they can be read
 along with. Transliterated, not translated: the same words, just readable.
 Latin text inside a line is left exactly as written, and the original script
-is still published as `lyrics_original`.
+is still published as `lyrics_original`: the popup's character-set button
+switches to it, and remembers the choice.
 
 Japanese needs its own dictionary because a kanji has several readings and only
 context picks the right one; without `cutlet`, Japanese lyrics are left as they

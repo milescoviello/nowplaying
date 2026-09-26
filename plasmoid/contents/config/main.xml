@@ -18,5 +18,10 @@
       <label>Middle-click pin: always show homelab stats instead of lyrics</label>
       <default>false</default>
     </entry>
+    <entry name="originalScript" type="Bool">
+      <label>Popup: show lyrics in their original script rather than spelled
+      out in Latin letters</label>
+      <default>false</default>
+    </entry>
   </group>
 </kcfg>

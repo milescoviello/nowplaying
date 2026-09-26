@@ -39,6 +39,13 @@ PlasmoidItem {
     readonly property string readCommand: "cat " + statePath
 
     property var lyrics: []
+    // The same lines in their own script, when the daemon spelled them out in
+    // Latin letters for `lyrics`; otherwise empty.
+    property var lyricsOriginal: []
+    // Persisted like the pin: someone who reads the script wants it for every
+    // track, not just this one. Popup only -- the strip stays readable to all.
+    readonly property bool showOriginal: plasmoid.configuration.originalScript
+        && lyricsOriginal.length > 0 && lyricsOriginal.length === lyrics.length
     property string status: "idle"
     property string artist: ""
     property string title: ""
@@ -144,6 +151,7 @@ PlasmoidItem {
         if (newKey !== trackKey) {
             trackKey = newKey;
             lyrics = d.lyrics || [];
+            lyricsOriginal = d.lyrics_original || [];
             lineIndex = -1;
             snapColumn();
         }
@@ -541,6 +549,24 @@ PlasmoidItem {
                         opacity: 0.7
                     }
                 }
+
+                PlasmaComponents.ToolButton {
+                    Layout.alignment: Qt.AlignTop
+                    visible: root.lyricsOriginal.length > 0 && syncedView.visible
+                    icon.name: "character-set"
+                    checkable: true
+                    checked: plasmoid.configuration.originalScript
+                    onToggled: {
+                        plasmoid.configuration.originalScript = checked;
+                        plasmoid.configuration.writeConfig();
+                    }
+                    Accessible.name: "Original script"
+                    PlasmaComponents.ToolTip.text: checked
+                        ? "Showing the original script; click for Latin letters"
+                        : "Showing Latin letters; click for the original script"
+                    PlasmaComponents.ToolTip.visible: hovered
+                    PlasmaComponents.ToolTip.delay: Kirigami.Units.toolTipDelay
+                }
             }
         }
 
@@ -728,7 +754,8 @@ PlasmoidItem {
 
                         Repeater {
                             id: lineRepeater
-                            model: root.lyrics
+                            // Same timings either way, so lineIndex holds.
+                            model: root.showOriginal ? root.lyricsOriginal : root.lyrics
                             delegate: PlasmaComponents.Label {
                                 readonly property bool isCurrent: index === root.lineIndex
 
