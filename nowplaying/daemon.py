@@ -41,6 +41,9 @@ class Daemon:
         # Set the moment a player announces a change, so a skip doesn't wait
         # out the rest of a poll interval.
         self._wake = asyncio.Event()
+        # A checkpointing source's current reading is of unknown age; the
+        # next one that moves is fresh, and is believed outright.
+        self._await_report = False
 
     # --- client plumbing -----------------------------------------------------
     async def _handle_client(self, reader: asyncio.StreamReader,
@@ -360,10 +363,12 @@ class Daemon:
         # widget still has something to display.
         self.state.idle_active = False
 
-    async def _apply_mpris(self, now: mpris.Now) -> None:
+    async def _apply_mpris(self, now: mpris.Now, checkpointed: bool = False) -> None:
         """Drive state from a player's own metadata -- no audio capture.
 
-        Position/duration/playing come straight from the player and are exact.
+        Position/duration/playing come straight from the player and are exact,
+        except from a `checkpointed` source (Plex reporting for another
+        device), whose position is only as fresh as its last report.
         The title is only a hint: browsers publish a page title, so it gets used
         for the lyrics lookup but is not treated as verified track identity.
         """
@@ -397,10 +402,14 @@ class Daemon:
         fresh = abs(now.position - self._last_src_pos) > 0.001
         self._last_src_pos = now.position
 
-        if not s.anchor_wall:
-            resync = True                       # first reading for this track
-        elif was_playing != now.playing:
-            resync = True                       # play/pause flipped
+        if not s.anchor_wall or was_playing != now.playing:
+            resync = True                       # new track, or play/pause flipped
+            # A checkpoint is up to one report interval old (~15 s for Plex
+            # clients), and nothing says how old -- so wait for the next.
+            self._await_report = checkpointed
+        elif fresh and self._await_report:
+            resync = True                       # a report just landed: exact now
+            self._await_report = False
         elif fresh and abs(now.position - predicted) > config.POSITION_RESYNC_TOLERANCE:
             resync = True                       # a real seek, or genuine drift
         else:
@@ -514,6 +523,7 @@ class Daemon:
                 # no player at all -- it produces confident nonsense.
                 log.debug("ignoring unusable mpris entry: %r", now.title)
                 now = None
+            checkpointed = False
             if now is None or not now.playing:
                 # Nothing playing here. Plex clients on other devices (Plexamp
                 # on a phone, the TV apps) publish nothing locally, but the
@@ -522,6 +532,7 @@ class Daemon:
                 info = await loop.run_in_executor(None, enrich.from_plex)
                 if info is not None and info.usable and info.state and \
                         (now is None or info.playing):
+                    checkpointed = True
                     now = mpris.Now(
                         status="Playing" if info.playing else "Paused",
                         artist=info.artist, title=info.title, album=info.album,
@@ -529,9 +540,11 @@ class Daemon:
                         art_url=info.art_url)
             if now is not None and now.title and now.status.lower() != "stopped":
                 self._stop_stream()   # something is describing itself; stop listening
-                await self._apply_mpris(now)
+                await self._apply_mpris(now, checkpointed)
                 await self.broadcast()
-                await self._nap(1.0)
+                # Waiting on a fresh report: catch it the moment it lands,
+                # since the anchor is only as exact as when we see it.
+                await self._nap(0.25 if self._await_report and self.state.playing else 1.0)
                 return
             if self.source_pref == "mpris":
                 # No player: stay idle rather than opening the audio device.
