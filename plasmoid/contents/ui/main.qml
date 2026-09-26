@@ -62,8 +62,18 @@ PlasmoidItem {
     property real lineEnd: 0
     readonly property real leadSeconds: plasmoid.configuration.leadInMs / 1000
 
+    // A binding never re-runs just because Date.now() moved on, so staleness
+    // needs a clock that ticks: re-reading an unchanged written_at from a dead
+    // daemon's file changes nothing, and its last lyrics would scroll forever.
+    property real clock: Date.now() / 1000
+    Timer {
+        interval: 1000
+        running: true
+        repeat: true
+        onTriggered: root.clock = Date.now() / 1000
+    }
     readonly property bool stale:
-        writtenAt > 0 && (Date.now() / 1000 - writtenAt) > 20
+        writtenAt > 0 && (clock - writtenAt) > 20
     readonly property bool hasTrack: title.length > 0
     readonly property string trackLabel:
         hasTrack ? (artist.length ? artist + " — " + title : title) : ""
@@ -181,7 +191,7 @@ PlasmoidItem {
 
     Timer {  // drives the current line, the slide and the sideways creep
         interval: 20
-        running: root.playing && root.lyrics.length > 0
+        running: root.playing && root.lyrics.length > 0 && !root.stale
         repeat: true
         triggeredOnStart: true
         onTriggered: root.refreshLine()
