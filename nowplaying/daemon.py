@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.request
 
-from . import audio, config, enrich, fleet, lyrics as lyrics_mod, mpris
+from . import audio, config, enrich, fleet, lyrics as lyrics_mod, mpris, translit
 from .recognizer import Match, Recognizer
 from .state import State
 
@@ -93,6 +93,7 @@ class Daemon:
         s = self.state
         s.key = s.title = s.artist = s.album = s.cover = s.cover_file = ""
         s.lyrics = []
+        s.lyrics_original = []
         s.lyrics_plain = ""
         s.lyrics_synced = False
         s.lyrics_source = ""
@@ -161,18 +162,26 @@ class Daemon:
 
     async def _load_lyrics(self, match: Match) -> None:
         key = self.state.key
+        duration = self.state.duration or None
+
+        def fetch():
+            found = lyrics_mod.fetch(match.artist, match.title, match.album, duration)
+            return found, translit.lyrics(found.lines, found.plain)
+
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: lyrics_mod.fetch(match.artist, match.title, match.album,
-                                     self.state.duration or None),
-        )
+        result, latin = await loop.run_in_executor(None, fetch)
         s = self.state
         if s.key != key:
             return
         s.lyrics = result.lines
+        s.lyrics_original = []
         s.lyrics_synced = result.synced
         s.lyrics_plain = result.plain
+        if latin is not None:
+            # Not in Latin letters: publish them spelled out where every UI
+            # already looks, and keep the original script alongside.
+            s.lyrics_original = result.lines
+            s.lyrics, s.lyrics_plain = latin
         s.lyrics_source = result.source
         # LRCLIB knows the track length; Shazam does not. Use it for the
         # progress readout and for noticing when the track has run out.

@@ -79,6 +79,7 @@ def cmd_status() -> int:
     data = state.to_dict()
     # Keep the dump readable: lyrics can be hundreds of lines.
     data["lyrics"] = f"<{len(state.lyrics)} synced lines>"
+    data["lyrics_original"] = f"<{len(state.lyrics_original)} lines>"
     data["lyrics_plain"] = f"<{len(state.lyrics_plain)} chars>"
     data["position"] = round(state.position(), 2)
     print(json.dumps(data, indent=2))

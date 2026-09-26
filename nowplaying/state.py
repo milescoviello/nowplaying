@@ -26,6 +26,8 @@ class State:
     duration: float = 0.0         # 0 when unknown
 
     lyrics: list[tuple[float, str]] = field(default_factory=list)
+    # Same timings in the original script, when `lyrics` is transliterated.
+    lyrics_original: list[tuple[float, str]] = field(default_factory=list)
     lyrics_synced: bool = False
     lyrics_plain: str = ""
     lyrics_source: str = ""
@@ -57,6 +59,7 @@ class State:
     def from_dict(cls, data: dict) -> "State":
         known = {f for f in cls.__dataclass_fields__}
         clean = {k: v for k, v in data.items() if k in known}
-        if "lyrics" in clean and clean["lyrics"]:
-            clean["lyrics"] = [(float(t), s) for t, s in clean["lyrics"]]
+        for k in ("lyrics", "lyrics_original"):
+            if clean.get(k):
+                clean[k] = [(float(t), s) for t, s in clean[k]]
         return cls(**clean)

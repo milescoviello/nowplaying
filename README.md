@@ -120,6 +120,23 @@ chmod 600 ~/.config/nowplaying/plex.env
 
 Without this it still works — album and artwork just come from iTunes instead.
 
+### Optional: lyrics in Latin letters
+
+```bash
+.venv/bin/pip install anyascii pypinyin     # every script; pinyin for Chinese
+.venv/bin/pip install cutlet unidic-lite    # Japanese (~250 MB dictionary)
+```
+
+Lyrics in any other script — Cyrillic, Greek, Korean, Arabic, Thai, Chinese,
+Japanese, … — are then shown spelled out in Latin letters so they can be read
+along with. Transliterated, not translated: the same words, just readable.
+Latin text inside a line is left exactly as written, and the original script
+is still published as `lyrics_original`.
+
+Japanese needs its own dictionary because a kanji has several readings and only
+context picks the right one; without `cutlet`, Japanese lyrics are left as they
+are rather than misread. Set `NOWPLAYING_TRANSLITERATE=0` to turn it all off.
+
 ### Optional: homelab health
 
 Site-specific, set via environment:
@@ -199,7 +216,8 @@ can other displays. Treat these keys as stable:
 | `artist` `title` `album` | current track |
 | `anchor_wall` `anchor_pos` | position anchor — see below |
 | `playing` `duration` | transport state |
-| `lyrics` | `[[seconds, text], ...]`, sorted |
+| `lyrics` | `[[seconds, text], ...]`, sorted; in Latin letters when transliterated |
+| `lyrics_original` | same timings in the original script when transliterated, else `[]` |
 | `lyrics_synced` | false = plain text only, no timings |
 | `cover_file` | local path to artwork, or empty |
 | `idle_active` `idle_kind` `idle_line1` `idle_line2` `idle_ok` | idle display |
@@ -222,6 +240,7 @@ nowplaying/
   mpris.py            playerctl source + title cleanup
   enrich.py           Plex / iTunes metadata and artwork
   lyrics.py           LRCLIB client, LRC parser, disk cache
+  translit.py         other scripts in Latin letters (optional)
   fleet.py            Uptime Kuma health via ssh + sqlite
   daemon.py           detection loop, state file, unix socket
   state.py            shared state, anchor-based position
