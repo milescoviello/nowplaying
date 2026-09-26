@@ -35,8 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_source(d)
     d.add_argument("-v", "--verbose", action="store_true")
 
-    st = sub.add_parser("status", help="print the current state as JSON and exit")
-    add_source(st)
+    sub.add_parser("status", help="print the current state as JSON and exit")
 
     sub.add_parser("sources", help="list available audio sources")
     sub.add_parser("stop", help="stop a running daemon")
@@ -59,10 +58,21 @@ def cmd_sources() -> int:
     return 0
 
 
-def cmd_status(source: str) -> int:
+def cmd_status() -> int:
+    """Report on a running daemon; never start one.
+
+    A status query that quietly spawned a daemon with the default source
+    ("auto") would open the audio device the moment nothing was playing --
+    the recording indicator the MPRIS setup exists to avoid.
+    """
     import json
     from . import client
-    state = client.get_once(autostart=True, source=source)
+    try:
+        state = client.get_once(autostart=False)
+    except OSError:
+        print("daemon not running (start it with: nowplaying daemon --source mpris)",
+              file=sys.stderr)
+        return 1
     if state is None:
         print("no state received", file=sys.stderr)
         return 1
@@ -126,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     if command == "stop":
         return cmd_stop()
     if command == "status":
-        return cmd_status(args.source)
+        return cmd_status()
     if command == "daemon":
         from . import daemon
         return daemon.main(source=args.source, verbose=args.verbose)
