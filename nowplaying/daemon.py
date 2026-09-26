@@ -362,7 +362,10 @@ class Daemon:
             if now.duration:
                 s.duration = now.duration
             await self.broadcast()
-            await self._load_lyrics(Match(key=s.key, title=s.title,
+            # Library titles carry suffixes like "(remastered 2024)" that make
+            # LRCLIB fall back to an unsynced match; display them, but look
+            # up the bare title.
+            await self._load_lyrics(Match(key=s.key, title=mpris.clean_title(s.title),
                                           artist=s.artist, album=s.album))
         if now.duration:
             s.duration = now.duration
