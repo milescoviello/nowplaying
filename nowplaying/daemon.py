@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import signal
 import time
 import urllib.error
 import urllib.request
@@ -44,6 +45,7 @@ class Daemon:
         # A checkpointing source's current reading is of unknown age; the
         # next one that moves is fresh, and is believed outright.
         self._await_report = False
+        self._follow: asyncio.subprocess.Process | None = None
 
     # --- client plumbing -----------------------------------------------------
     async def _handle_client(self, reader: asyncio.StreamReader,
@@ -486,7 +488,7 @@ class Daemon:
         """
         while True:
             try:
-                proc = await asyncio.create_subprocess_exec(
+                proc = self._follow = await asyncio.create_subprocess_exec(
                     *mpris.FOLLOW, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL)
             except OSError as exc:
@@ -496,6 +498,7 @@ class Daemon:
                 while await proc.stdout.readline():
                     self._wake.set()
             finally:
+                self._follow = None
                 with contextlib.suppress(ProcessLookupError):
                     proc.kill()
                 await proc.wait()
@@ -599,6 +602,18 @@ class Daemon:
         self.state.status = "playing"
         await asyncio.sleep(config.IDLE_POLL)
 
+    def _on_sigterm(self) -> None:
+        """`nowplaying stop` sends SIGTERM, whose default kills us outright --
+        leaving playerctl --follow running with nobody reading it. Take it
+        down first, then die the same abrupt way as ever (a slow, graceful
+        exit could race a daemon started right after and unlink its socket).
+        """
+        if self._follow is not None:
+            with contextlib.suppress(ProcessLookupError):
+                self._follow.kill()
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTERM)
+
     async def serve(self) -> None:
         sock = config.socket_path()
         if sock.exists():
@@ -606,6 +621,7 @@ class Daemon:
         server = await asyncio.start_unix_server(self._handle_client, path=str(sock))
         config.pid_path().write_text(str(os.getpid()))
         log.info("listening on %s", sock)
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, self._on_sigterm)
         await asyncio.get_running_loop().run_in_executor(None, self._prune_covers)
         self._set_status("idle", "starting up")
         loop_task = asyncio.create_task(self.run_loop())
