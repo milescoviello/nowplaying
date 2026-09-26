@@ -23,7 +23,7 @@ class Daemon:
     def __init__(self, source_pref: str = "auto", verbose: bool = False) -> None:
         self.source_pref = source_pref
         self.verbose = verbose
-        self.state = State()
+        self.state = State(source_pref=source_pref)
         self.recognizer = Recognizer()
         self.clients: set[asyncio.StreamWriter] = set()
         self.clip_path = config.cache_dir() / "clip.wav"
@@ -46,6 +46,9 @@ class Daemon:
         # next one that moves is fresh, and is believed outright.
         self._await_report = False
         self._follow: asyncio.subprocess.Process | None = None
+        # What the saved-source file looked like when last read; a change is
+        # a new pick from the popup.
+        self._source_stamp = _saved_stamp()
 
     # --- client plumbing -----------------------------------------------------
     async def _handle_client(self, reader: asyncio.StreamReader,
@@ -328,6 +331,36 @@ class Daemon:
         self._set_status("idle" if not s.key else "paused",
                          "silence" if not s.key else "paused / silent")
 
+    # --- source switching ----------------------------------------------------
+    def _check_saved_source(self) -> None:
+        """Apply a source picked in the popup since the last tick."""
+        stamp = _saved_stamp()
+        if stamp == self._source_stamp:
+            return
+        self._source_stamp = stamp
+        source = read_saved_source()
+        if source is not None:
+            self._set_source(source)
+
+    def _set_source(self, source: str) -> None:
+        if source == self.source_pref:
+            return
+        log.info("source: %s -> %s", self.source_pref, source)
+        self.source_pref = self.state.source_pref = source
+        if source == "mpris":
+            # The mode that promises no capture must let go of the device now,
+            # not whenever the next player turns up.
+            self._stop_stream()
+        elif source in ("loopback", "mic") and self.state.key.startswith("mpris:"):
+            # A player's track, its anchor and a pause-long idle takeover mean
+            # nothing to a source that identifies what it hears instead.
+            if self._load_task is not None:
+                self._load_task.cancel()
+            self._mpris_key = ""
+            self._await_report = False
+            self._clear_idle()
+            self._clear_track(status="searching", message="listening")
+
     # --- main loop -----------------------------------------------------------
     async def run_loop(self) -> None:
         while True:
@@ -519,6 +552,7 @@ class Daemon:
         await asyncio.sleep(0.15)
 
     async def _tick(self) -> None:
+        self._check_saved_source()
         # Prefer a player's own metadata: costs no capture, so nothing trips
         # the desktop's recording indicator, and the position is exact.
         if self.source_pref in ("mpris", "auto"):
@@ -632,16 +666,16 @@ class Daemon:
         self._set_status("idle", "starting up")
         loop_task = asyncio.create_task(self.run_loop())
         heartbeat = asyncio.create_task(self._heartbeat())
-        watcher = (asyncio.create_task(self._watch_players())
-                   if self.source_pref in ("mpris", "auto") else None)
+        # Whatever the source: the popup can switch to one that reads players
+        # at any moment, and following them costs no capture.
+        watcher = asyncio.create_task(self._watch_players())
         try:
             async with server:
                 await asyncio.gather(loop_task, heartbeat)
         finally:
             loop_task.cancel()
             heartbeat.cancel()
-            if watcher is not None:
-                watcher.cancel()
+            watcher.cancel()
             if self._load_task is not None:
                 self._load_task.cancel()
             self._stop_stream()
@@ -656,13 +690,38 @@ class Daemon:
             await self.broadcast()
 
 
+def _saved_stamp() -> tuple[int, int, int] | None:
+    try:
+        st = config.source_file().stat()
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_ino, st.st_size
+
+
+def read_saved_source() -> str | None:
+    """The source last picked in the popup, or None if nothing valid is saved."""
+    try:
+        value = config.source_file().read_text().strip()
+    except OSError:
+        return None
+    if value not in config.SOURCES:
+        log.warning("ignoring unknown source %r in %s", value, config.source_file())
+        return None
+    return value
+
+
 def main(source: str = "auto", verbose: bool = False) -> int:
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         handlers=[logging.StreamHandler(), logging.FileHandler(config.log_path())],
     )
-    d = Daemon(source_pref=source, verbose=verbose)
+    # A pick from the popup beats --source: autostart passes a fixed --source
+    # at every login, which would otherwise undo the pick each time.
+    saved = read_saved_source()
+    if saved is not None and saved != source:
+        log.info("using the saved source %s over --source %s", saved, source)
+    d = Daemon(source_pref=saved or source, verbose=verbose)
     try:
         asyncio.run(d.serve())
     except KeyboardInterrupt:

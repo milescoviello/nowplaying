@@ -59,6 +59,32 @@ Matching uses artist + title + album + duration, since duration is what stops yo
 getting the radio edit's timings on the album cut. Results are cached to disk, so
 a repeat play is instant and works offline.
 
+### Choosing the source
+
+| Source | Where the track comes from | Audio capture |
+|---|---|---|
+| `mpris` | player metadata only | never |
+| `auto` | player metadata; failing that, fingerprinting the speaker output while something plays here, else the mic | whenever no player describes the track |
+| `loopback` | fingerprinting the speaker output | always |
+| `mic` | fingerprinting the room | always |
+
+Fingerprinting sends audio fingerprints to Shazam, and holding the device open
+lights Plasma's recording indicator the whole time — which is why the autostart
+entry runs `mpris`.
+
+The source can be switched while the daemon runs, from the popup or by writing
+one of those words to `~/.config/nowplaying/source`:
+
+```bash
+echo mic > ~/.config/nowplaying/source
+```
+
+The daemon picks it up on its next tick, within a few seconds, and the choice
+outlives a restart. **A saved choice wins over `--source`**, because autostart
+passes the same `--source` at every login and would otherwise undo it;
+`--source` only applies while nothing is saved. Delete the file to go back to
+it.
+
 ### Getting the timing right
 
 Each line is selected by binary-searching the `.lrc` timestamps against the
@@ -172,8 +198,8 @@ the widget just says so and carries on.
 ## The fingerprinting fallback
 
 Before MPRIS, this identified music by **fingerprinting the audio itself** via
-Shazam, which still exists behind `--source auto|loopback|mic` for audio that no
-player describes — a game, a stream, a phone across the room.
+Shazam, which still exists as the `auto`, `loopback` and `mic` sources for audio
+that no player describes — a game, a stream, a phone across the room.
 
 The interesting part is that it recovers the *playback position*, not just the
 track. `shazamio-core` fingerprints a 10 s window taken from the middle of
@@ -222,6 +248,7 @@ can other displays. Treat these keys as stable:
 | `artist` `title` `album` | current track |
 | `anchor_wall` `anchor_pos` | position anchor — see below |
 | `playing` `duration` | transport state |
+| `source_pref` | the source in use: `mpris` `auto` `loopback` `mic`, or a device name from `--source` |
 | `player` | playerctl instance playing it, for `playerctl --player`; empty when nothing local is (a Plex client elsewhere, or fingerprinting) |
 | `lyrics` | `[[seconds, text], ...]`, sorted; in Latin letters when transliterated |
 | `lyrics_original` | same timings in the original script when transliterated, else `[]` |

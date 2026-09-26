@@ -36,6 +36,10 @@ class State:
     lyrics_plain: str = ""
     lyrics_source: str = ""
 
+    # What the daemon is set to listen with: mpris | auto | loopback | mic, or
+    # a device name from --source. UIs show this, never what they last asked
+    # for, so a switch that didn't take is visible as such.
+    source_pref: str = ""
     source_label: str = ""
     message: str = ""
     confidence: str = ""          # "" | "anchored" | "estimated"

@@ -57,6 +57,11 @@ SEARCH_INTERVAL = 2.0    # gap between recognition attempts while searching
 VERIFY_INTERVAL = 15.0
 RESYNC_TOLERANCE = 3.0   # |predicted - measured| under this = clock is fine
 
+# --- sources -----------------------------------------------------------------
+# What the popup offers, and all a saved choice may hold. `--source` also takes
+# an explicit pactl source name, but only on the command line.
+SOURCES = ("mpris", "auto", "loopback", "mic")
+
 # --- lyrics ------------------------------------------------------------------
 LRCLIB_BASE = "https://lrclib.net/api"
 # LRCLIB gains lyrics over time, so a miss is only remembered for a day --
@@ -101,6 +106,21 @@ def covers_dir() -> Path:
     d = cache_dir() / "covers"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def config_dir() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
+    return Path(base) / APP
+
+
+def source_file() -> Path:
+    """The source picked in the panel popup: one word from SOURCES.
+
+    A file rather than a socket command, because the applet is QML with no
+    socket API; it writes this through the same executable data source it
+    reads the state with. Being a file, the choice also outlives a restart.
+    """
+    return config_dir() / "source"
 
 
 def log_path() -> Path:
