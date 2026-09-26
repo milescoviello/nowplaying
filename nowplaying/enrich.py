@@ -77,9 +77,11 @@ def from_plex() -> Info | None:
     except (urllib.error.URLError, OSError, ValueError):
         return None
     items = (data.get("MediaContainer") or {}).get("Metadata") or []
-    for m in items:
-        if m.get("type") != "track":
-            continue
+    tracks = [m for m in items if m.get("type") == "track"]
+    # Several clients can hold a session at once -- say one paused here and
+    # one playing on a phone. The one playing is the one worth showing.
+    tracks.sort(key=lambda m: ((m.get("Player") or {}).get("state") or "").lower() != "playing")
+    for m in tracks:
         thumb = m.get("thumb") or m.get("parentThumb") or ""
         # Ask Plex to scale it: the original can be a 4000px, 20 MB scan,
         # for an image the panel draws at icon size.

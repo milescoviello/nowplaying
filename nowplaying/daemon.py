@@ -514,12 +514,14 @@ class Daemon:
                 # no player at all -- it produces confident nonsense.
                 log.debug("ignoring unusable mpris entry: %r", now.title)
                 now = None
-            if now is None:
-                # Nothing describing itself over MPRIS. Plex clients (Plexamp,
-                # the mobile apps) publish nothing locally, but the server knows
-                # exactly what they are playing -- and it costs no capture.
+            if now is None or not now.playing:
+                # Nothing playing here. Plex clients on other devices (Plexamp
+                # on a phone, the TV apps) publish nothing locally, but the
+                # server knows what they're playing -- it costs no capture, and
+                # a track playing elsewhere beats one sitting paused here.
                 info = await loop.run_in_executor(None, enrich.from_plex)
-                if info is not None and info.usable and info.state:
+                if info is not None and info.usable and info.state and \
+                        (now is None or info.playing):
                     now = mpris.Now(
                         status="Playing" if info.playing else "Paused",
                         artist=info.artist, title=info.title, album=info.album,
