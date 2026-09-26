@@ -84,7 +84,10 @@ def from_plex() -> Info | None:
         art = (f"{url}{thumb}?X-Plex-Token={token}" if thumb else "")
         player = m.get("Player") or {}
         return Info(
-            artist=m.get("grandparentTitle") or "",
+            # grandparentTitle is the *album* artist -- "Various Artists" on a
+            # compilation, which LRCLIB never matches. The track's own artist,
+            # when it differs, is in originalTitle.
+            artist=m.get("originalTitle") or m.get("grandparentTitle") or "",
             album=m.get("parentTitle") or "",
             title=m.get("title") or "",
             art_url=art,
