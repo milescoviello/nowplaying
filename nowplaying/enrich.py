@@ -100,27 +100,34 @@ def from_plex() -> Info | None:
 
 
 def from_itunes(artist: str, title: str) -> Info | None:
-    """Public metadata lookup -- fills album and artwork for any player."""
-    term = " ".join(x for x in (artist, title) if x).strip()
-    if not term:
+    """Public metadata lookup -- fills album and artwork for any player.
+
+    iTunes search is fuzzy, and its top hit is often a different song: one
+    with the same title by another artist, a cover, a remix. So a hit
+    only counts when it corroborates both the artist and the title, and even
+    then it contributes album and artwork only -- the player's own artist and
+    title stay, since they are what the lyrics lookup needs. With no artist
+    there is nothing to corroborate against (it's usually a video's page
+    title anyway), so don't guess.
+    """
+    if not (artist and title):
         return None
-    q = urllib.parse.urlencode({"term": term, "media": "music",
-                                "entity": "song", "limit": 5})
+    q = urllib.parse.urlencode({"term": f"{artist} {title}", "media": "music",
+                                "entity": "song", "limit": 10})
     try:
         data = _get_json(f"https://itunes.apple.com/search?{q}")
     except (urllib.error.URLError, OSError, ValueError):
         return None
-    results = data.get("results") or []
-    if not results:
+    best = next((r for r in data.get("results") or []
+                 if _matches(r.get("trackName"), title)
+                 and _matches(r.get("artistName"), artist)), None)
+    if best is None:
         return None
-    want = (title or "").lower()
-    best = next((r for r in results
-                 if (r.get("trackName") or "").lower() == want), results[0])
     art = (best.get("artworkUrl100") or "").replace("100x100bb", "600x600bb")
     return Info(
-        artist=best.get("artistName") or artist,
+        artist=artist,
         album=best.get("collectionName") or "",
-        title=best.get("trackName") or title,
+        title=title,
         art_url=art,
         duration=float(best.get("trackTimeMillis") or 0) / 1000.0,
         source="itunes",
