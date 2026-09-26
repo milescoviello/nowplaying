@@ -23,6 +23,12 @@ FORMAT = SEP.join([
 
 # Leading playback glyphs some players prepend to the title.
 _GLYPHS = re.compile(r"^[\s▶⏸⏹⏯●♪♫‖]+")
+# YouTube's unread-notification count: "(12) Some Video Title".
+_COUNTER = re.compile(r"^\(\d+\)\s*")
+# What Firefox publishes when a page plays media without describing it.
+_PLACEHOLDER = re.compile(r"^\w+ is playing media$", re.I)
+# Plex's web player publishes TV episodes as "Show - S1 · E10".
+_EPISODE = re.compile(r"\bS\d+\s*·\s*E\d+\b")
 # Site suffixes: " - YouTube", " | Spotify", ...
 _SUFFIX = re.compile(
     r"\s*[-|–]\s*(YouTube( Music)?|Spotify|SoundCloud|Bandcamp|Vimeo|Twitch)\s*$",
@@ -68,17 +74,22 @@ class Now:
         the title with no artist and no length -- believing it produces
         confidently wrong lyrics for a track that isn't playing.
         """
-        if not self.title:
+        if not self.title or _PLACEHOLDER.match(self.title):
             return False
-        if self.artist or self.duration > 0:
+        if _EPISODE.search(self.title):
+            return False   # a TV episode, not a track
+        if self.artist:
             return True
-        # No artist and no duration: only trust it if it still looks like
-        # "something - something" rather than a bare site name.
-        return len(self.title) > 3 and self.title.lower() not in _BARE_TITLES
+        # A site's name is never a track -- even with a length, which a
+        # paused Plex or Navidrome tab keeps publishing.
+        if self.title.lower() in _BARE_TITLES:
+            return False
+        return self.duration > 0 or len(self.title) > 3
 
 
 def clean_title(raw: str) -> str:
     t = _GLYPHS.sub("", raw or "").strip()
+    t = _COUNTER.sub("", t)
     t = _SUFFIX.sub("", t)
     t = _NOISE.sub("", t)
     return re.sub(r"\s{2,}", " ", t).strip(" -–—")
