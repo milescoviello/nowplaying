@@ -112,9 +112,9 @@ Kuma has no unauthenticated status API unless you publish a status page, and
 laptop ──ssh──> proxmox node ──pct exec──> sqlite3 (read-only)
 ```
 
-The daemon decides when the idle display takes over — no player, or paused for
-longer than `PAUSE_IDLE_SECONDS` (15 s) — and publishes a single `idle_active`
-flag. The widget just obeys it, so the rule lives in exactly one place.
+The daemon decides when the idle display takes over — no player (or, for a
+source that listens, nothing identified), or paused or silent for longer than
+`PAUSE_IDLE_SECONDS` (15 s) — and publishes a single `idle_active` flag. The widget just obeys it, so the rule lives in exactly one place.
 
 ## Install
 

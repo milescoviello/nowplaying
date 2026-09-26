@@ -31,6 +31,7 @@ class Daemon:
         self._last_verify = 0.0
         self._mpris_key = ""
         self._paused_since = 0.0
+        self._silent_since = 0.0
         self._last_src_pos = -1.0
         self._stream: audio.StreamCapture | None = None
         # (position, wall) of a measurement that disagreed with the clock and is
@@ -614,11 +615,21 @@ class Daemon:
             return
         if stream.level(config.PROBE_SECONDS) < config.SILENCE_RMS:
             self._go_silent()
+            # The same rule as a player's: nothing identified, or silent for as
+            # long as a pause may last, and the idle display takes over.
+            if not self._silent_since:
+                self._silent_since = time.time()
+            if not self.state.key or \
+                    time.time() - self._silent_since >= config.PAUSE_IDLE_SECONDS:
+                await self._refresh_idle()
             await self.broadcast()
             await asyncio.sleep(config.IDLE_POLL)
             return
 
-        # Audio is present.
+        # Audio is present, and wins the widget back from the idle display.
+        self._silent_since = 0.0
+        if self.state.idle_active:
+            self._clear_idle()
         if self.state.key and self.state.duration and \
                 self.state.position() > self.state.duration + 5:
             self._clear_track(status="searching", message="track ended")
