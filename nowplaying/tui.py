@@ -1,6 +1,12 @@
-"""Terminal karaoke view."""
+"""Terminal version of the panel widget's popup.
+
+Renders the same state the applet does, read from the daemon's socket rather
+than its state file: the track, the whole lyrics sheet following the line being
+sung, and the track's progress.
+"""
 from __future__ import annotations
 
+import bisect
 import contextlib
 import os
 import re
@@ -11,25 +17,33 @@ import termios
 import threading
 import time
 import tty
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
-from rich.align import Align
-from rich.console import Console, Group
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.live import Live
 from rich.panel import Panel
+from rich.progress_bar import ProgressBar
+from rich.rule import Rule
+from rich.segment import Segment
+from rich.table import Table
 from rich.text import Text
 
 from . import client
 from .state import State
 
 FPS = 15
-CONTEXT = 3  # lyric lines shown either side of the current one
 # The applet's default leadInMs: a line is taken as current this early, so it
 # is up by the time it is sung, and in step with the panel.
 LEAD_IN = 0.3
 RETRY_SECONDS = 2.0
-NOT_RUNNING = "not running — start it with: nowplaying daemon --source mpris"
-
+# The daemon sends a heartbeat every 5 s even when nothing changes, so a
+# connection this quiet means a wedged daemon rather than an idle one. The same
+# limit the applet puts on its state file.
+STALE_SECONDS = 20.0
+# Keep the line being sung 40% of the way down rather than dead centre: lyrics
+# are read downward, so show more of what's coming. As in the popup.
+FOLLOW_AT = 0.4
+START_HINT = "start it with: nowplaying daemon --source mpris"
 
 # Escape sequences (arrows, function keys) are swallowed whole, so their
 # trailing letters can't be misread as key presses.
@@ -68,8 +82,48 @@ def _keyboard() -> Iterator[int | None]:
 
 
 def _fmt(seconds: float) -> str:
-    seconds = max(0, int(seconds))
-    return f"{seconds // 60}:{seconds % 60:02d}"
+    t = max(0, int(seconds))
+    h, m, s = t // 3600, t // 60 % 60, t % 60
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _line(text: str, style: str = "") -> Text:
+    """One row, cut short rather than wrapped, so the header's height is fixed."""
+    return Text(text, style=style, no_wrap=True, overflow="ellipsis")
+
+
+def _wrap(console: Console, items: list[Text], width: int) -> tuple[list[Text], list[int]]:
+    """Each item wrapped and centred to the width, plus the row each starts on."""
+    rows: list[Text] = []
+    starts = []
+    for item in items:
+        starts.append(len(rows))
+        rows.extend(item.wrap(console, width, justify="center") or [Text("")])
+    return rows, starts
+
+
+class _Fill:
+    """Header, body and footer stacked to the exact height on offer, so the
+    body can be cut to whatever room the other two leave it."""
+
+    def __init__(self, header: list[RenderableType],
+                 body: Callable[[Console, int, int], list[Text]],
+                 footer: list[RenderableType]) -> None:
+        self.header, self.body, self.footer = header, body, footer
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        width, height = options.max_width, options.height or console.height
+        opts = options.reset_height()
+
+        def lines(parts: list[RenderableType]) -> list[list[Segment]]:
+            return console.render_lines(Group(*parts), opts) if parts else []
+
+        head, foot = lines(self.header), lines(self.footer)
+        room = max(0, height - len(head) - len(foot))
+        body = Segment.set_shape(lines(self.body(console, width, room)), width, room)
+        for line in (head + body + foot)[:height]:
+            yield from line
+            yield Segment.line()
 
 
 class TUI:
@@ -78,6 +132,7 @@ class TUI:
         # None until the first connect attempt: the socket is the only way to
         # tell, since a dead daemon's last state is all there is otherwise.
         self.alive: bool | None = None
+        self.seen = 0.0          # monotonic time of the last message
         self.lock = threading.Lock()
         self.stop = threading.Event()
         self.quit = False
@@ -95,6 +150,7 @@ class TUI:
                 for state in client.stream(sock):
                     with self.lock:
                         self.state, self.alive = state, True
+                        self.seen = time.monotonic()
                     if self.stop.is_set():
                         return
             except OSError:
@@ -104,102 +160,109 @@ class TUI:
             if self.stop.wait(RETRY_SECONDS):
                 return
 
+    def _link(self) -> str:
+        """connecting | down | quiet | up: how the daemon is, by its socket."""
+        if self.alive is None:
+            return "connecting"
+        if not self.alive:
+            return "down"
+        return "quiet" if time.monotonic() - self.seen > STALE_SECONDS else "up"
+
     # --- rendering -----------------------------------------------------------
-    def _header(self, s: State, pos: float) -> Text:
-        if s.title:
-            head = Text()
-            head.append("♪ ", style="bold magenta")
-            head.append(s.artist or "Unknown artist", style="bold cyan")
-            head.append("  —  ")
-            head.append(s.title, style="bold white")
-            if s.duration:
-                head.append(f"   {_fmt(pos)} / {_fmt(s.duration)}", style="dim")
-            else:
-                head.append(f"   {_fmt(pos)}", style="dim")
-            return head
-        label = {
-            "idle": "waiting for audio…",
-            "searching": "listening…",
-            "paused": "paused",
-            "error": "error",
-        }.get(s.status, s.status)
-        return Text(f"♪ {label}", style="bold yellow")
+    def _header(self, s: State) -> list[RenderableType]:
+        rows: list[RenderableType] = [_line(s.title, "bold")]
+        if s.artist:
+            rows.append(_line(s.artist))
+        if s.album:
+            rows.append(_line(s.album, "dim"))
+        rows.append(Rule(style="dim"))
+        return rows
 
-    def _lyrics(self, s: State, pos: float, height: int) -> Group:
-        if s.lyrics:
-            idx = -1
-            t = pos + LEAD_IN
-            lo, hi = 0, len(s.lyrics) - 1
-            while lo <= hi:
-                mid = (lo + hi) // 2
-                if s.lyrics[mid][0] <= t:
-                    idx, lo = mid, mid + 1
-                else:
-                    hi = mid - 1
-            span = max(1, min(CONTEXT, (height - 4) // 2))
-            start = max(0, idx - span)
-            end = min(len(s.lyrics), idx + span + 2)
-            rows = []
-            for i in range(start, end):
-                text = s.lyrics[i][1] or "♪"
-                if i == idx:
-                    rows.append(Align.center(
-                        Text(text, style="bold white on grey19")))
-                else:
-                    distance = abs(i - idx)
-                    style = "grey62" if distance == 1 else "grey42" if distance == 2 else "grey30"
-                    rows.append(Align.center(Text(text, style=style)))
-            if idx < 0:
-                rows.insert(0, Align.center(Text("…", style="dim")))
-            return Group(*rows)
+    def _progress(self, s: State, pos: float) -> RenderableType:
+        # An unknown length has nothing to be a fraction of.
+        if s.duration <= 0:
+            return _line(_fmt(pos), "dim")
+        grid = Table.grid(expand=True, padding=(0, 1))
+        grid.add_column(no_wrap=True)
+        grid.add_column(ratio=1)
+        grid.add_column(no_wrap=True)
+        grid.add_row(Text(_fmt(min(pos, s.duration)), style="dim"),
+                     ProgressBar(total=s.duration, completed=min(pos, s.duration),
+                                 complete_style="magenta", finished_style="magenta"),
+                     Text(_fmt(s.duration), style="dim"))
+        return grid
 
-        if s.lyrics_plain:
-            body = Text(s.lyrics_plain, style="grey62")
-            return Group(Align.center(Text("(unsynced lyrics)", style="dim yellow")),
-                         Text(""), body)
+    def _synced(self, console: Console, s: State, pos: float,
+                width: int, height: int) -> list[Text]:
+        current = bisect.bisect_right(s.lyrics, pos + LEAD_IN, key=lambda l: l[0]) - 1
+        items = [Text(text or "♪", style="bold" if i == current else "dim")
+                 for i, (_, text) in enumerate(s.lyrics)]
+        rows, starts = _wrap(console, items, width)
+        rows = [Text(""), *rows, Text("")]
+        top = 0
+        if current >= 0:
+            start = starts[current] + 1
+            end = starts[current + 1] + 1 if current + 1 < len(starts) else len(rows) - 1
+            top = round((start + end) / 2 - height * FOLLOW_AT)
+        top = max(0, min(top, len(rows) - height))
+        return rows[top:top + height]
 
-        msg = {
-            "playing": s.message or "no lyrics for this track",
-            "searching": "listening for a match…",
-            "idle": "no audio detected",
-            "paused": "audio stopped",
-            "error": s.message,
-        }.get(s.status, s.message or "…")
-        return Group(Align.center(Text(msg, style="dim")))
+    def _plain(self, console: Console, s: State, width: int, height: int) -> list[Text]:
+        # No timings: the sheet as published, from the top.
+        items = [Text(line) for line in s.lyrics_plain.splitlines()]
+        rows, _ = _wrap(console, items, width)
+        return [Text(""), *rows][:height]
 
-    def _footer(self, s: State) -> Text:
-        bits = []
-        if s.source_label:
-            bits.append(s.source_label)
-        if s.lyrics_source:
-            bits.append(f"{s.lyrics_source}{' · synced' if s.lyrics_synced else ''}")
-        if s.confidence:
-            bits.append(s.confidence)
-        if s.message and s.status == "playing":
-            bits.append(s.message)
-        bits.append("q to quit")
-        return Text(" · ".join(bits), style="dim")
+    def _message(self, s: State, link: str) -> tuple[str, str]:
+        if link == "connecting":
+            return "Connecting…", ""
+        if link == "down":
+            return "nowplaying is not running", START_HINT
+        if link == "quiet":
+            return "nowplaying is not responding", \
+                f"No word from the daemon in {STALE_SECONDS:.0f} s."
+        if not s.title:
+            if s.status == "error":
+                return "Nothing playing", s.message
+            return "Nothing playing", "listening…" if s.status == "searching" else ""
+        # The daemon only says why once the lookup has answered.
+        return ("No lyrics", s.message) if s.message else ("Looking up lyrics…", "")
+
+    def _placeholder(self, console: Console, text: str, explanation: str,
+                     width: int, height: int) -> list[Text]:
+        items = [Text(text, style="bold")]
+        if explanation:
+            items.append(Text(explanation, style="dim"))
+        rows, _ = _wrap(console, items, width)
+        return [Text("")] * max(0, (height - len(rows)) // 2) + rows
 
     def render(self, height: int) -> Panel:
         with self.lock:
-            s = self.state
-            pos = s.position()
-            alive = self.alive
-        if not alive:
-            label = "connecting…" if alive is None else NOT_RUNNING
-            return Panel(Align.center(Text(f"♪ {label}", style="bold yellow")),
-                         title="nowplaying", subtitle=Text("q to quit", style="dim"),
-                         border_style="grey35", padding=(1, 2))
+            s, link = self.state, self._link()
+        pos = s.position()
+        # A dead daemon's last track is not "now playing"; show nothing of it.
+        live = link == "up" and bool(s.title)
+
+        def body(console: Console, width: int, height: int) -> list[Text]:
+            if live and s.lyrics:
+                return self._synced(console, s, pos, width, height)
+            if live and s.lyrics_plain:
+                return self._plain(console, s, width, height)
+            return self._placeholder(console, *self._message(s, link), width, height)
+
+        header = self._header(s) if live else []
+        footer: list[RenderableType] = []
+        if live:
+            footer += [Rule(style="dim"), self._progress(s, pos)]
         return Panel(
-            Group(
-                Align.center(self._header(s, pos)),
-                Text(""),
-                self._lyrics(s, pos, height),
-            ),
+            _Fill(header, body, footer),
+            # Given outright: under Live's alt screen the height never reaches
+            # the panel, and the body is cut to fit it.
+            height=height,
             title="nowplaying",
-            subtitle=self._footer(s),
-            border_style="magenta" if s.status == "playing" else "grey35",
-            padding=(1, 2),
+            subtitle=Text("q quit", style="dim"),
+            border_style="magenta" if live and s.playing else "grey35",
+            padding=(0, 1),
         )
 
     # --- keys --------------------------------------------------------------
