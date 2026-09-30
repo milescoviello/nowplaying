@@ -38,6 +38,7 @@ from . import client, config
 from .state import State
 
 FPS = 15
+VIS_FPS = 60             # the bars need more frames than the words do
 # The applet's default leadInMs: a line is taken as current this early, so it
 # is up by the time it is sung, and in step with the panel.
 LEAD_IN = 0.3
@@ -75,6 +76,7 @@ KEYS = (
     ("1-4", "pick the source"),
     ("o", "original script / Latin letters"),
     ("h", "pin the homelab readout"),
+    ("v", "visualizer (listens to the speaker output)"),
     ("↑↓ j k", "scroll the lyrics"),
     ("PgUp PgDn", "a page at a time"),
     ("Home End", "to the top or bottom"),
@@ -137,6 +139,13 @@ def _cap(key: str, label: str, accent: str, style: StyleType = "") -> Text:
     return Text.assemble((key, Style(color=accent, bold=True)), " ", (label, style))
 
 
+def _mix(colour: str, other: str, share: float) -> str:
+    """`colour` moved `share` of the way towards `other`, both #rrggbb."""
+    a = [int(colour[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(other[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * share):02x}" for x, y in zip(a, b))
+
+
 def _rgb(colour: str, scale: float = 1.0) -> str:
     """`colour` (#rrggbb) with each channel scaled, to darken it."""
     r, g, b = (round(int(colour[i:i + 2], 16) * scale) for i in (1, 3, 5))
@@ -196,6 +205,140 @@ def _accent(path: str) -> str:
 def _has_original(s: State) -> bool:
     """The lyrics come in their own script too, line for line."""
     return 0 < len(s.lyrics_original) == len(s.lyrics)
+
+
+# --- visualizer --------------------------------------------------------------
+VIS_RATE = 44100
+# Samples per look: 46 ms, short enough that a beat moves the bars rather
+# than being averaged away.
+VIS_WINDOW = 2048
+VIS_BLOCKS = " ▁▂▃▄▅▆▇█"
+# Each look is blended with the last this much, both ways, as a web audio
+# analyser does: enough to stop flicker, little enough to keep the bounce.
+VIS_SMOOTHING = 0.5
+# A full-scale sine reads 0 dB; the bars span this far below the loudest
+# band of late -- wide enough that a quiet band still stands mid-height
+# rather than dropping to the floor -- and a quieter peak than VIS_FLOOR is
+# treated as silence rather than turned up into a wall of noise.
+VIS_RANGE = 48.0
+VIS_FLOOR = -35.0
+VIS_BAR = 2              # columns per bar
+# Wide enough, and the visualizer stands beside the lyrics at their full
+# height instead of in a band under them.
+VIS_BESIDE = 90
+# The cap above each bar holds its peak this many frames, then falls, faster
+# the longer it falls.
+VIS_HOLD = 12
+
+
+class _Listener:
+    """The speaker output for the visualizer: parec on the default sink's
+    monitor, keeping the last VIS_WINDOW samples.
+
+    It is a capture like the fingerprinting one, so the desktop's recording
+    indicator is on while it runs, though nothing leaves this machine. Only
+    the v key starts it, and it is only kept open while a track plays.
+    """
+
+    def __init__(self) -> None:
+        self.proc: subprocess.Popen | None = None
+        self.buf = bytearray()
+        self.lock = threading.Lock()
+
+    def start(self) -> str:
+        """Start listening; why it couldn't, or "" when it did."""
+        from . import audio
+        source = audio.default_monitor()
+        if not source:
+            return "no speaker output to listen to"
+        try:
+            self.proc = subprocess.Popen(
+                ["parec", f"--device={source}", "--format=s16le", f"--rate={VIS_RATE}",
+                 "--channels=1", "--latency-msec=20"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL)
+        except OSError:
+            return "the visualizer needs parec"
+        threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
+        return ""
+
+    def _read(self, proc: subprocess.Popen) -> None:
+        assert proc.stdout is not None
+        while chunk := proc.stdout.read1(4096):
+            with self.lock:
+                self.buf += chunk
+                del self.buf[:-VIS_WINDOW * 2]
+
+    def started(self) -> bool:
+        return self.proc is not None
+
+    def died(self) -> bool:
+        return self.proc is not None and self.proc.poll() is not None
+
+    def stop(self) -> None:
+        if self.proc is None:
+            return
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+        self.proc = None
+        with self.lock:
+            self.buf.clear()
+
+    def latest(self) -> bytes | None:
+        with self.lock:
+            return bytes(self.buf) if len(self.buf) >= VIS_WINDOW * 2 else None
+
+
+class _Spectrum:
+    """Bar heights from the latest samples: log-spaced bands from the bass to
+    the treble, levelled against the loudest of late so any volume fills the
+    space, with a cap above each bar that holds its peak and then drops."""
+
+    def __init__(self) -> None:
+        import numpy
+        self.np = numpy
+        self.window = numpy.blackman(VIS_WINDOW)
+        self.freqs = numpy.fft.rfftfreq(VIS_WINDOW, 1 / VIS_RATE)
+        self.smooth = numpy.zeros(len(self.freqs))
+        self.peak = VIS_FLOOR
+        self.levels = numpy.zeros(0)
+        self.caps = numpy.zeros(0)
+        self.held = numpy.zeros(0)       # frames each cap has left to hold
+        self.falling = numpy.zeros(0)    # each cap's current fall speed
+
+    def __call__(self, raw: bytes, bars: int):
+        np = self.np
+        x = np.frombuffer(raw, dtype="<i2")[-VIS_WINDOW:] / 32768
+        # Scaled so a full-scale sine comes out at 1, i.e. 0 dB.
+        spectrum = np.abs(np.fft.rfft(x * self.window)) / (VIS_WINDOW * 0.42 / 2)
+        self.smooth = VIS_SMOOTHING * self.smooth + (1 - VIS_SMOOTHING) * spectrum
+        edges = np.geomspace(40, 16000, bars + 1)
+        centres = np.sqrt(edges[:-1] * edges[1:])
+        # The bass bands are narrower than the FFT's bins, so read them off
+        # the curve between bins; wider bands take their loudest bin.
+        band = np.interp(centres, self.freqs, self.smooth)
+        bins = np.searchsorted(self.freqs, edges)
+        for i, (a, b) in enumerate(zip(bins[:-1], bins[1:])):
+            if b > a:
+                band[i] = max(band[i], self.smooth[a:b].max())
+        db = 20 * np.log10(band + 1e-9)
+        # Music thins out towards the treble; tilt it back up 3 dB an octave.
+        db += 3 * np.log2(centres / 1000)
+        self.peak = max(VIS_FLOOR, db.max(), self.peak - 0.08)
+        level = np.clip((db - (self.peak - VIS_RANGE)) / VIS_RANGE, 0, 1)
+        if len(self.levels) != bars:
+            self.caps, self.held, self.falling = level.copy(), np.zeros(bars), np.zeros(bars)
+        self.levels = level
+        # A bar that reaches its cap pushes it up and restarts the hold.
+        pushed = level >= self.caps
+        self.caps = np.where(pushed, level, self.caps)
+        self.held = np.where(pushed, VIS_HOLD, self.held - 1)
+        self.falling = np.where(self.held > 0, 0, self.falling + 0.004)
+        self.caps = np.maximum(level, self.caps - self.falling)
+        return self.levels, self.caps
 
 
 def _cost(pref: str) -> str:
@@ -320,6 +463,11 @@ class TUI:
         self.wrapped: tuple = ((), [], [])
         self.help = False
         self.accent = PLAIN
+        # Off until asked for: it listens, and lights the recording indicator.
+        self.visualizer = False
+        self.listener = _Listener()
+        self.spectrum: _Spectrum | None = None
+        self.frame_at = 0.0      # when the next frame is due
 
     def _reader(self) -> None:
         """Follow the daemon, reconnecting whenever it goes away.
@@ -443,8 +591,13 @@ class TUI:
         row = Text("  ", justify="center").join(
             _cap(str(n), f" {label} ", self.accent, chosen if value == pref else "")
             for n, (value, label, _) in enumerate(SOURCES, 1))
+        note = _cost(pref)
+        if self.listener.started():
+            note = ("The visualizer listens to the speaker output: recording "
+                    "indicator on, nothing leaves this machine." if pref == "mpris"
+                    else note + " The visualizer listens too, locally.")
         cost = Text("switching…", style=self.accent) if self.requested \
-            else Text(_cost(pref), style=QUIET)
+            else Text(note, style=QUIET)
         cost.justify = "center"
         return Text.assemble(("Source  ", QUIET), row), cost
 
@@ -458,6 +611,60 @@ class TUI:
         for n, (_, label, hint) in enumerate(SOURCES, 1):
             grid.add_row(f"{n} {label}", Text(hint, style=QUIET))
         return [Text(""), Align.center(grid)]
+
+    def _bars(self, rows: int, width: int) -> list[Text]:
+        """The visualizer: bars in eighths of a row, with the peak caps a line
+        above them."""
+        raw = self.listener.latest()
+        count = width // VIS_BAR
+        if raw and self.spectrum:
+            levels, caps = self.spectrum(raw, count)
+        else:
+            levels = caps = [0.0] * count
+        tops = [round(level * rows * 8) for level in levels]
+        # A cap sits in the eighth above its peak; drawn as a sliver at the
+        # top or foot of its cell, whichever is nearer, since a cell holds
+        # one glyph.
+        marks = [min(rows * 8 - 1, round(cap * rows * 8)) for cap in caps]
+        # A bar ends in a seven-eighths block, so the gap to the next is a
+        # sliver rather than a whole column.
+        body = "█" * (VIS_BAR - 1) + "▉"
+        # Centred by hand: justify="center" trims each row's trailing spaces
+        # first, which would shift the rows against each other and break
+        # the bars apart.
+        indent = " " * ((width - count * VIS_BAR) // 2)
+        cap_style = Style(color=_mix(self.accent, "#ffffff", 0.35))
+        out = []
+        for r in reversed(range(rows)):
+            # A slight gradient, darker at the foot, as Plexamp's bars have.
+            bar_style = Style(color=_rgb(self.accent, 0.62 + 0.38 * r / max(1, rows - 1)))
+            row = Text(indent, no_wrap=True)
+            for top, mark in zip(tops, marks):
+                fill = top - r * 8
+                if fill >= 8:
+                    row.append(body, bar_style)
+                elif mark // 8 == r and mark >= top:
+                    row.append(("▔" if mark % 8 >= 4 else "▁") * VIS_BAR, cap_style)
+                elif fill > 0:
+                    row.append(VIS_BLOCKS[fill] * VIS_BAR, bar_style)
+                else:
+                    row.append(" " * VIS_BAR)
+            out.append(row)
+        return out
+
+    def _listen(self, wanted: bool) -> None:
+        """Keep the visualizer's capture open exactly while it is drawn."""
+        if self.listener.died():
+            self.listener.stop()
+            self.visualizer = False
+            self._say("the visualizer lost the speaker output")
+        elif wanted and not self.listener.started():
+            why = self.listener.start()
+            if why:
+                self.visualizer = False
+                self._say(why)
+        elif not wanted and self.listener.started():
+            self.listener.stop()
 
     def _message(self, s: State, link: str) -> tuple[str, str]:
         if link == "connecting":
@@ -508,11 +715,31 @@ class TUI:
         live = link == "up" and bool(s.title)
         view = self._view(s, link)
         self.accent = _accent(s.cover_file) if live else PLAIN
+        # Only while a track plays: a still screen isn't worth the indicator.
+        self._listen(self.visualizer and live and s.playing)
+        bars = self.listener.started() and view != "help"
+        # Inside the border and padding.
+        beside = bars and width - 6 >= VIS_BESIDE
         sheet = (s.key, len(s.lyrics), view)
         if sheet != self.sheet:
             self.sheet, self.scroll = sheet, None
 
         def body(console: Console, width: int, height: int) -> list[RenderableType]:
+            if not beside:
+                return sheet(console, width, height)
+            # The lyrics on the left, the visualizer on the right, the height
+            # of the whole body so the bars have room to climb.
+            right = width * 9 // 20
+            left = width - right - 3
+            grid = Table.grid()
+            grid.add_column(width=left, no_wrap=True)
+            grid.add_column(width=3)
+            grid.add_column(width=right, no_wrap=True)
+            grid.add_row(Group(*sheet(console, left, height)), "",
+                         Group(*self._bars(height, right)))
+            return [grid]
+
+        def sheet(console: Console, width: int, height: int) -> list[RenderableType]:
             if view == "help":
                 return self._help()
             if view == "idle":
@@ -533,6 +760,8 @@ class TUI:
 
         header = self._header(s) if live else []
         footer: list[RenderableType] = [Text("")]
+        if bars and not beside:
+            footer += self._bars(min(8, max(3, (height - 2) // 6)), width - 6)
         if live:
             footer.append(self._progress(s, pos))
         buttons = []
@@ -589,6 +818,8 @@ class TUI:
             hints.append(("h", "unpin"))
         elif link == "up" and s.idle_kind:
             hints.append(("h", "homelab"))
+        if view in ("synced", "plain", "message") and link == "up" and s.title:
+            hints.append(("v", "hide visualizer" if self.visualizer else "visualizer"))
         hints += [("?", "close" if self.help else "keys"), ("q", "quit")]
         # Styled piece by piece: the panel lays a subtitle's own style over
         # all of it, which would wash out the keys.
@@ -643,6 +874,15 @@ class TUI:
             return
         self.requested, self.requested_at = value, time.monotonic()
 
+    def _toggle_visualizer(self) -> None:
+        if not self.visualizer and self.spectrum is None:
+            try:
+                self.spectrum = _Spectrum()
+            except ImportError:
+                self._say("the visualizer needs numpy")
+                return
+        self.visualizer = not self.visualizer
+
     def _toggle_original(self) -> None:
         with self.lock:
             s, link = self.state, self._link()
@@ -679,6 +919,8 @@ class TUI:
             self.help = not self.help
         elif key == "h":
             self.pinned = not self.pinned
+        elif key == "v":
+            self._toggle_visualizer()
         elif key == "o":
             self._toggle_original()
         elif key in ("1", "2", "3", "4"):
@@ -687,11 +929,21 @@ class TUI:
             self._scroll(key)
 
     def _wait(self, fd: int | None) -> None:
-        """Sit out one frame, handling any keys pressed meanwhile."""
+        """Sit out the rest of the frame, handling any keys pressed meanwhile.
+
+        Paced from the frame's start rather than its end, so the time spent
+        drawing doesn't slow the rate down.
+        """
+        frame = 1 / (VIS_FPS if self.listener.started() else FPS)
+        now = time.monotonic()
+        # Fallen behind (a slow frame, a suspended terminal): start afresh
+        # rather than rush to catch up.
+        self.frame_at = max(self.frame_at + frame, now)
+        pause = self.frame_at - now
         if fd is None:
-            time.sleep(1 / FPS)
+            time.sleep(pause)
             return
-        ready, _, _ = select.select([fd], [], [], 1 / FPS)
+        ready, _, _ = select.select([fd], [], [], pause)
         if not ready:
             return
         data = os.read(fd, 1024)
@@ -718,6 +970,7 @@ class TUI:
             pass
         finally:
             self.stop.set()
+            self.listener.stop()
         return 0
 
 
