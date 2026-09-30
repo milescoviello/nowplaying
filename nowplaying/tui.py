@@ -44,6 +44,9 @@ STALE_SECONDS = 20.0
 # Keep the line being sung 40% of the way down rather than dead centre: lyrics
 # are read downward, so show more of what's coming. As in the popup.
 FOLLOW_AT = 0.4
+# Scrolling away to read ahead shouldn't be yanked back on the next line: the
+# view goes back to the music this long after the last scroll.
+RESUME_SECONDS = 4.0
 START_HINT = "start it with: nowplaying daemon --source mpris"
 FLASH_SECONDS = 3.0      # how long a key's "can't do that" note stays up
 # A pick not reported back by then didn't take. Longer than the daemon's
@@ -55,9 +58,15 @@ SWITCH_SECONDS = 15.0
 # two sources that listen.
 SOURCES = (("mpris", "Player"), ("auto", "Auto"), ("loopback", "Speaker"), ("mic", "Mic"))
 
-# Escape sequences (arrows, function keys) are swallowed whole, so their
-# trailing letters can't be misread as key presses.
+# Escape sequences (arrows, function keys) are read whole, so their trailing
+# letters can't be misread as key presses; the ones not named here are dropped.
 _ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|O.)")
+_NAMED = {
+    "\x1b[A": "up", "\x1bOA": "up", "\x1b[B": "down", "\x1bOB": "down",
+    "\x1b[5~": "pgup", "\x1b[6~": "pgdn",
+    "\x1b[H": "home", "\x1bOH": "home", "\x1b[1~": "home", "\x1b[7~": "home",
+    "\x1b[F": "end", "\x1bOF": "end", "\x1b[4~": "end", "\x1b[8~": "end",
+}
 
 
 def _keys(data: str) -> list[str]:
@@ -65,6 +74,8 @@ def _keys(data: str) -> list[str]:
     while i < len(data):
         m = _ESCAPE.match(data, i)
         if m:
+            if m.group() in _NAMED:
+                keys.append(_NAMED[m.group()])
             i = m.end()
             continue
         keys.append("esc" if data[i] == "\x1b" else data[i])
@@ -180,6 +191,14 @@ class TUI:
         # The lyrics in their own script rather than Latin letters, when the
         # daemon has both. Kept across tracks, like the popup's toggle.
         self.original = False
+        # Where the user has scrolled the sheet to, as its top row; None while
+        # the synced sheet follows the music. A new sheet starts over.
+        self.scroll: int | None = None
+        self.scrolled_at = 0.0
+        self.sheet: tuple = ()
+        # The last frame's view of the sheet, for a scroll to start from.
+        self.top = 0
+        self.room = 0
 
     def _reader(self) -> None:
         """Follow the daemon, reconnecting whenever it goes away.
@@ -245,19 +264,30 @@ class TUI:
                  for i, (_, text) in enumerate(lines)]
         rows, starts = _wrap(console, items, width)
         rows = [Text(""), *rows, Text("")]
+        if self.scroll is not None and time.monotonic() - self.scrolled_at > RESUME_SECONDS:
+            self.scroll = None
         top = 0
-        if current >= 0:
+        if self.scroll is not None:
+            top = self.scroll
+        elif current >= 0:
             start = starts[current] + 1
             end = starts[current + 1] + 1 if current + 1 < len(starts) else len(rows) - 1
             top = round((start + end) / 2 - height * FOLLOW_AT)
-        top = max(0, min(top, len(rows) - height))
-        return rows[top:top + height]
+        return self._cut(rows, top, height)
 
     def _plain(self, console: Console, s: State, width: int, height: int) -> list[Text]:
-        # No timings: the sheet as published, from the top.
+        # No timings: the sheet as published, from the top. Nothing to follow,
+        # so it stays wherever it is scrolled to.
         items = [Text(line) for line in s.lyrics_plain.splitlines()]
         rows, _ = _wrap(console, items, width)
-        return [Text(""), *rows][:height]
+        return self._cut([Text(""), *rows, Text("")], self.scroll or 0, height)
+
+    def _cut(self, rows: list[Text], top: int, height: int) -> list[Text]:
+        top = max(0, min(top, len(rows) - height))
+        if self.scroll is not None:
+            self.scroll = top   # so scrolling back from past the end is immediate
+        self.top, self.room = top, height
+        return rows[top:top + height]
 
     def _sources(self, pref: str) -> list[RenderableType]:
         """Where the daemon gets the track from. Marked by what the daemon
@@ -319,6 +349,9 @@ class TUI:
         pos = s.position()
         live = link == "up" and bool(s.title)
         view = self._view(s, link)
+        sheet = (s.key, len(s.lyrics), view)
+        if sheet != self.sheet:
+            self.sheet, self.scroll = sheet, None
 
         def body(console: Console, width: int, height: int) -> list[Text]:
             if view == "idle":
@@ -434,6 +467,21 @@ class TUI:
             return
         self.original = not self.original
 
+    def _scroll(self, key: str) -> None:
+        with self.lock:
+            s, link = self.state, self._link()
+        if self._view(s, link) not in ("synced", "plain"):
+            return
+        page = max(1, self.room - 2)
+        step = {"up": -1, "k": -1, "down": 1, "j": 1, "pgup": -page, "pgdn": page}
+        if key in ("home", "g"):
+            self.scroll = 0
+        elif key in ("end", "G"):
+            self.scroll = sys.maxsize   # clamped to the last page on the next frame
+        else:
+            self.scroll = (self.top if self.scroll is None else self.scroll) + step[key]
+        self.scrolled_at = time.monotonic()
+
     def _key(self, key: str) -> None:
         if key in ("q", "Q"):
             self.quit = True
@@ -449,6 +497,8 @@ class TUI:
             self._toggle_original()
         elif key in ("1", "2", "3", "4"):
             self._pick_source(SOURCES[int(key) - 1][0])
+        elif key in ("up", "down", "pgup", "pgdn", "home", "end", "j", "k", "g", "G"):
+            self._scroll(key)
 
     def _wait(self, fd: int | None) -> None:
         """Sit out one frame, handling any keys pressed meanwhile."""
