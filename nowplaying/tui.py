@@ -102,6 +102,11 @@ def _cap(key: str, label: str, style: str = "") -> Text:
     return Text.assemble((key, "bold magenta"), " ", (label, style))
 
 
+def _has_original(s: State) -> bool:
+    """The lyrics come in their own script too, line for line."""
+    return 0 < len(s.lyrics_original) == len(s.lyrics)
+
+
 def _cost(pref: str) -> str:
     """The current source's cost, spelled out: anything that listens sends
     fingerprints to Shazam and lights the recording indicator."""
@@ -172,6 +177,9 @@ class TUI:
         # The panel's middle-click pin: the homelab readout even while music
         # plays. Kept for this session only.
         self.pinned = False
+        # The lyrics in their own script rather than Latin letters, when the
+        # daemon has both. Kept across tracks, like the popup's toggle.
+        self.original = False
 
     def _reader(self) -> None:
         """Follow the daemon, reconnecting whenever it goes away.
@@ -231,8 +239,10 @@ class TUI:
     def _synced(self, console: Console, s: State, pos: float,
                 width: int, height: int) -> list[Text]:
         current = bisect.bisect_right(s.lyrics, pos + LEAD_IN, key=lambda l: l[0]) - 1
+        # Same timings either way, so the current line holds.
+        lines = s.lyrics_original if self.original and _has_original(s) else s.lyrics
         items = [Text(text or "♪", style="bold" if i == current else "dim")
-                 for i, (_, text) in enumerate(s.lyrics)]
+                 for i, (_, text) in enumerate(lines)]
         rows, starts = _wrap(console, items, width)
         rows = [Text(""), *rows, Text("")]
         top = 0
@@ -286,29 +296,43 @@ class TUI:
         rows, _ = _wrap(console, items, width)
         return [Text("")] * max(0, (height - len(rows)) // 2) + rows
 
+    def _view(self, s: State, link: str) -> str:
+        """What the body shows: idle | no-idle | synced | plain | message."""
+        # The daemon decides when the idle display takes over (no player, or
+        # paused long enough); the pin forces it.
+        if link == "up" and (s.idle_active or self.pinned):
+            if s.idle_kind:
+                return "idle"
+            if self.pinned:
+                return "no-idle"
+        # A dead daemon's last track is not "now playing"; show nothing of it.
+        if link == "up" and s.title:
+            if s.lyrics:
+                return "synced"
+            if s.lyrics_plain:
+                return "plain"
+        return "message"
+
     def render(self, height: int) -> Panel:
         with self.lock:
             s, link = self.state, self._link()
         pos = s.position()
-        # A dead daemon's last track is not "now playing"; show nothing of it.
         live = link == "up" and bool(s.title)
+        view = self._view(s, link)
 
         def body(console: Console, width: int, height: int) -> list[Text]:
-            # The daemon decides when the idle display takes over (no player,
-            # or paused long enough); the pin forces it.
-            if link == "up" and (s.idle_active or self.pinned):
-                if s.idle_kind:
-                    # Only shout when something is actually wrong.
-                    return self._placeholder(console, s.idle_line1, s.idle_line2,
-                                             width, height,
-                                             "bold" if s.idle_ok else "bold red")
-                if self.pinned:
-                    return self._placeholder(console, "No homelab readout",
-                                             "The daemon has none to show.",
-                                             width, height)
-            if live and s.lyrics:
+            if view == "idle":
+                # Only shout when something is actually wrong.
+                return self._placeholder(console, s.idle_line1, s.idle_line2,
+                                         width, height,
+                                         "bold" if s.idle_ok else "bold red")
+            if view == "no-idle":
+                return self._placeholder(console, "No homelab readout",
+                                         "The daemon has none to show.",
+                                         width, height)
+            if view == "synced":
                 return self._synced(console, s, pos, width, height)
-            if live and s.lyrics_plain:
+            if view == "plain":
                 return self._plain(console, s, width, height)
             return self._placeholder(console, *self._message(s, link), width, height)
 
@@ -335,15 +359,17 @@ class TUI:
             # the panel, and the body is cut to fit it.
             height=height,
             title="nowplaying",
-            subtitle=self._subtitle(s, link),
+            subtitle=self._subtitle(s, link, view),
             border_style="magenta" if live and s.playing else "grey35",
             padding=(0, 1),
         )
 
-    def _subtitle(self, s: State, link: str) -> Text:
+    def _subtitle(self, s: State, link: str, view: str) -> Text:
         if time.monotonic() < self.flash_until:
             return Text(self.flash, style="yellow")
         caps = []
+        if view == "synced" and _has_original(s):
+            caps.append(_cap("o", "Latin letters" if self.original else "original script"))
         if self.pinned:
             caps.append(_cap("h", "unpin"))
         elif link == "up" and s.idle_kind:
@@ -400,6 +426,14 @@ class TUI:
             return
         self.requested, self.requested_at = value, time.monotonic()
 
+    def _toggle_original(self) -> None:
+        with self.lock:
+            s, link = self.state, self._link()
+        if self._view(s, link) != "synced" or not _has_original(s):
+            self._say("no original script for this track")
+            return
+        self.original = not self.original
+
     def _key(self, key: str) -> None:
         if key in ("q", "Q"):
             self.quit = True
@@ -411,6 +445,8 @@ class TUI:
             self._control("previous")
         elif key == "h":
             self.pinned = not self.pinned
+        elif key == "o":
+            self._toggle_original()
         elif key in ("1", "2", "3", "4"):
             self._pick_source(SOURCES[int(key) - 1][0])
 
