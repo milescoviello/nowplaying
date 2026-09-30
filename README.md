@@ -232,6 +232,7 @@ being replaced by an `auto` one that listens.
 | `1` `2` `3` `4` | source: Player, Auto, Speaker, Mic |
 | `o` | original script or Latin letters, for transliterated lyrics |
 | `h` | pin the homelab readout over the lyrics, like the panel's middle-click |
+| `v` | a spectrum visualizer, beside the lyrics in a wide terminal; it listens to the speaker output, so the recording indicator is on while it shows (nothing leaves the machine) |
 | `↑` `↓` `j` `k` `PgUp` `PgDn` `Home` `End` | scroll the sheet; it goes back to following the music 4 s later |
 | `?` | list the keys and what each source does |
 | `q` | quit |
