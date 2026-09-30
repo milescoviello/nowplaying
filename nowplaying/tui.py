@@ -8,6 +8,7 @@ for the daemon to pick up.
 from __future__ import annotations
 
 import bisect
+import colorsys
 import contextlib
 import functools
 import math
@@ -30,7 +31,7 @@ from rich.panel import Panel
 from rich.progress_bar import ProgressBar
 from rich.rule import Rule
 from rich.segment import Segment
-from rich.style import Style
+from rich.style import Style, StyleType
 from rich.table import Table
 from rich.text import Text
 
@@ -132,9 +133,65 @@ def _fmt(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def _cap(key: str, label: str, style: str = "") -> Text:
+def _cap(key: str, label: str, accent: str, style: StyleType = "") -> Text:
     """A key and what it does, as the button it stands in for."""
-    return Text.assemble((key, "bold magenta"), " ", (label, style))
+    return Text.assemble((key, Style(color=accent, bold=True)), " ", (label, style))
+
+
+def _rgb(colour: str, scale: float = 1.0) -> str:
+    """`colour` (#rrggbb) with each channel scaled, to darken it."""
+    r, g, b = (round(int(colour[i:i + 2], 16) * scale) for i in (1, 3, 5))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+@functools.lru_cache(maxsize=16)
+def _accent(path: str) -> str:
+    """The cover's colour: its most prominent vivid hue, lifted to read on a
+    dark background. Worked out once per cover, from a thumbnail.
+
+    Decoded with QImage, which PyQt6 already brings for the overlay and
+    which needs no application object.
+    """
+    try:
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QImage
+    except ImportError:
+        return PLAIN
+    image = QImage(path) if path else None
+    if image is None or image.isNull():
+        return PLAIN
+    side = 32
+    small = image.scaled(side, side, Qt.AspectRatioMode.IgnoreAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation)
+    # Twelve hue buckets, each holding its weight and weighted r, g, b.
+    buckets = [[0.0, 0.0, 0.0, 0.0] for _ in range(12)]
+    for y in range(side):
+        for x in range(side):
+            v = small.pixel(x, y)
+            r, g, b = ((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255
+            hue, sat, val = colorsys.rgb_to_hsv(r, g, b)
+            if sat < 0.25 or val < 0.2:
+                continue
+            # Vivid counts for far more than murky, so a small bright emblem
+            # wins over a wide dull sky.
+            weight = sat * sat * val
+            bucket = buckets[int(hue * 12) % 12]
+            bucket[0] += weight
+            bucket[1] += r * weight
+            bucket[2] += g * weight
+            bucket[3] += b * weight
+    # One hue can straddle two buckets, so each is judged with its neighbours.
+    best = max(range(12), key=lambda i: buckets[i][0]
+               + (buckets[i - 1][0] + buckets[(i + 1) % 12][0]) / 2)
+    group = [buckets[(best + d) % 12] for d in (-1, 0, 1)]
+    weight = sum(bucket[0] for bucket in group)
+    if weight < 0.01 * side * side:
+        return COLOURLESS
+    r, g, b = (sum(bucket[i] for bucket in group) / weight for i in (1, 2, 3))
+    hue, light, sat = colorsys.rgb_to_hls(r, g, b)
+    r, g, b = colorsys.hls_to_rgb(hue, min(0.72, max(0.6, light)),
+                                  min(0.85, max(0.55, sat)))
+    return f"#{round(r * 255):02x}{round(g * 255):02x}{round(b * 255):02x}"
 
 
 def _has_original(s: State) -> bool:
@@ -166,6 +223,14 @@ SHEET = Style(color="#b4b4b4")
 TITLE = Style(color="#ffffff", bold=True)
 BYLINE = Style(color="#b4b4b4")
 QUIET = Style(color="#787878")
+# The chrome takes its colour from the cover; without one, this violet.
+PLAIN = "#c678dd"
+# A cover with next to no colour in it gets a light grey rather than a
+# guess at a hue.
+COLOURLESS = "#c8c8c8"
+ALARM = "#e06c75"
+IDLE_BORDER = "#4a4a4a"
+TROUGH = "#3a3a3a"       # the unplayed part of the progress bar
 
 
 @functools.lru_cache(maxsize=64)
@@ -255,6 +320,7 @@ class TUI:
         # (what it was wrapped from, rows, the row each line starts on).
         self.wrapped: tuple = ((), [], [])
         self.help = False
+        self.accent = PLAIN
 
     def _reader(self) -> None:
         """Follow the daemon, reconnecting whenever it goes away.
@@ -310,7 +376,8 @@ class TUI:
         grid.add_column(no_wrap=True)
         grid.add_row(Text(_fmt(min(pos, s.duration)), style="dim"),
                      ProgressBar(total=s.duration, completed=min(pos, s.duration),
-                                 complete_style="magenta", finished_style="magenta"),
+                                 style=TROUGH, complete_style=self.accent,
+                                 finished_style=self.accent),
                      Text(_fmt(s.duration), style="dim"))
         return grid
 
@@ -373,22 +440,24 @@ class TUI:
         if self.requested and (pref == self.requested or
                                time.monotonic() - self.requested_at > SWITCH_SECONDS):
             self.requested = ""
+        chosen = Style(color="#1a1a1a", bgcolor=self.accent, bold=True)
         row = Text("  ", justify="center").join(
-            _cap(str(n), f" {label} ", "reverse" if value == pref else "")
+            _cap(str(n), f" {label} ", self.accent, chosen if value == pref else "")
             for n, (value, label, _) in enumerate(SOURCES, 1))
-        cost = "switching…" if self.requested else _cost(pref)
-        return [Text.assemble(("Source  ", "dim"), row, justify="center"),
-                Text(cost, style="dim", justify="center")]
+        cost = Text("switching…", style=self.accent) if self.requested \
+            else Text(_cost(pref), style=QUIET)
+        cost.justify = "center"
+        return [Text.assemble(("Source  ", QUIET), row, justify="center"), cost]
 
     def _help(self) -> list[RenderableType]:
         grid = Table.grid(padding=(0, 2))
-        grid.add_column(no_wrap=True, style="bold magenta")
+        grid.add_column(no_wrap=True, style=Style(color=self.accent, bold=True))
         grid.add_column()
         for key, what in KEYS:
             grid.add_row(key, what)
         grid.add_row("", "")
         for n, (_, label, hint) in enumerate(SOURCES, 1):
-            grid.add_row(f"{n} {label}", Text(hint, style="dim"))
+            grid.add_row(f"{n} {label}", Text(hint, style=QUIET))
         return [Text(""), Align.center(grid)]
 
     def _message(self, s: State, link: str) -> tuple[str, str]:
@@ -439,6 +508,7 @@ class TUI:
         pos = s.position()
         live = link == "up" and bool(s.title)
         view = self._view(s, link)
+        self.accent = _accent(s.cover_file) if live else PLAIN
         sheet = (s.key, len(s.lyrics), view)
         if sheet != self.sheet:
             self.sheet, self.scroll = sheet, None
@@ -450,7 +520,8 @@ class TUI:
                 # Only shout when something is actually wrong.
                 return self._placeholder(console, s.idle_line1, s.idle_line2,
                                          width, height,
-                                         "bold" if s.idle_ok else "bold red")
+                                         Style(color=TITLE.color if s.idle_ok else ALARM,
+                                               bold=True))
             if view == "no-idle":
                 return self._placeholder(console, "No homelab readout",
                                          "The daemon has none to show.",
@@ -469,9 +540,9 @@ class TUI:
         # another device is out of playerctl's reach.
         if live and s.player:
             footer.append(Text("   ", justify="center").join([
-                _cap("p", "previous"),
-                _cap("space", "pause" if s.playing else "play"),
-                _cap("n", "next"),
+                _cap("p", "previous", self.accent),
+                _cap("space", "pause" if s.playing else "play", self.accent),
+                _cap("n", "next", self.accent),
             ]))
         # Not just while a track plays: nothing playing is exactly when
         # someone reaches for a different source. An older daemon doesn't
@@ -485,22 +556,32 @@ class TUI:
             height=height,
             title="nowplaying",
             subtitle=self._subtitle(s, link, view),
-            border_style="magenta" if live and s.playing else "grey35",
+            border_style=self._border(s, live, view),
             padding=(0, 1),
         )
 
+    def _border(self, s: State, live: bool, view: str) -> str:
+        # Only shout when something is actually wrong.
+        if view == "idle" and not s.idle_ok:
+            return ALARM
+        if not live:
+            return IDLE_BORDER
+        return self.accent if s.playing else _rgb(self.accent, 0.55)
+
     def _subtitle(self, s: State, link: str, view: str) -> Text:
         if time.monotonic() < self.flash_until:
-            return Text(self.flash, style="yellow")
-        caps = []
+            return Text(self.flash, style="#e5c07b")
+        hints = []
         if view == "synced" and _has_original(s):
-            caps.append(_cap("o", "Latin letters" if self.original else "original script"))
+            hints.append(("o", "Latin letters" if self.original else "original script"))
         if self.pinned:
-            caps.append(_cap("h", "unpin"))
+            hints.append(("h", "unpin"))
         elif link == "up" and s.idle_kind:
-            caps.append(_cap("h", "homelab"))
-        caps += [_cap("?", "close" if self.help else "keys"), _cap("q", "quit")]
-        return Text("   ", style="dim").join(caps)
+            hints.append(("h", "homelab"))
+        hints += [("?", "close" if self.help else "keys"), ("q", "quit")]
+        # Styled piece by piece: the panel lays a subtitle's own style over
+        # all of it, which would wash out the keys.
+        return Text("   ").join(_cap(key, label, self.accent, QUIET) for key, label in hints)
 
     # --- keys --------------------------------------------------------------
     def _say(self, text: str) -> None:
