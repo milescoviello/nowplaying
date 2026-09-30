@@ -276,13 +276,23 @@ PlasmoidItem {
     // file outlives a restart. Written whole and renamed into place, so the
     // daemon never reads half a word.
     function pickSource(value) {
-        if (value === sourcePref) return;
+        // Unless an earlier pick is still unread: this one has to overwrite
+        // it even when it names the source in use, or Auto and straight back
+        // to Player leaves "auto" in the file for the daemon to act on.
+        if (value === sourcePref && !requestedSource.length) return;
         var dir = shellQuote(configDir);
         runner.connectSource("mkdir -p " + dir
             + " && printf %s " + shellQuote(value) + " > " + dir + "/source.tmp"
             + " && mv " + dir + "/source.tmp " + dir + "/source");
-        requestedSource = value;
-        sourceTimeout.restart();
+        // Back to the source in use: the daemon has nothing to report, so
+        // there's nothing to wait for.
+        if (value === sourcePref) {
+            requestedSource = "";
+            sourceTimeout.stop();
+        } else {
+            requestedSource = value;
+            sourceTimeout.restart();
+        }
     }
 
     Timer {
