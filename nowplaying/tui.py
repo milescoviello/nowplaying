@@ -29,7 +29,7 @@ from rich.segment import Segment
 from rich.table import Table
 from rich.text import Text
 
-from . import client
+from . import client, config
 from .state import State
 
 FPS = 15
@@ -46,6 +46,14 @@ STALE_SECONDS = 20.0
 FOLLOW_AT = 0.4
 START_HINT = "start it with: nowplaying daemon --source mpris"
 FLASH_SECONDS = 3.0      # how long a key's "can't do that" note stays up
+# A pick not reported back by then didn't take. Longer than the daemon's
+# slowest tick, a fingerprint lookup.
+SWITCH_SECONDS = 15.0
+
+# The popup's source buttons, in its order, picked outright with 1-4. No key
+# steps through them: going from Player to Mic that way would pass through
+# two sources that listen.
+SOURCES = (("mpris", "Player"), ("auto", "Auto"), ("loopback", "Speaker"), ("mic", "Mic"))
 
 # Escape sequences (arrows, function keys) are swallowed whole, so their
 # trailing letters can't be misread as key presses.
@@ -89,9 +97,22 @@ def _fmt(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def _cap(key: str, label: str) -> Text:
+def _cap(key: str, label: str, style: str = "") -> Text:
     """A key and what it does, as the button it stands in for."""
-    return Text.assemble((key, "bold magenta"), " ", label)
+    return Text.assemble((key, "bold magenta"), " ", (label, style))
+
+
+def _cost(pref: str) -> str:
+    """The current source's cost, spelled out: anything that listens sends
+    fingerprints to Shazam and lights the recording indicator."""
+    return {
+        "mpris": "No audio capture.",
+        "auto": "Listens when no player describes the track: "
+                "sent to Shazam, recording indicator on.",
+        "loopback": "Listening to the speaker output: "
+                    "sent to Shazam, recording indicator on.",
+        "mic": "Listening through the mic: sent to Shazam, recording indicator on.",
+    }.get(pref, f"Listening to {pref}: sent to Shazam, recording indicator on.")
 
 
 def _line(text: str, style: str = "") -> Text:
@@ -145,6 +166,9 @@ class TUI:
         self.quit = False
         self.flash = ""
         self.flash_until = 0.0
+        # The last pick, until the daemon either reports it or gives up.
+        self.requested = ""
+        self.requested_at = 0.0
 
     def _reader(self) -> None:
         """Follow the daemon, reconnecting whenever it goes away.
@@ -222,6 +246,20 @@ class TUI:
         rows, _ = _wrap(console, items, width)
         return [Text(""), *rows][:height]
 
+    def _sources(self, pref: str) -> list[RenderableType]:
+        """Where the daemon gets the track from. Marked by what the daemon
+        reports, never by the key pressed, so a switch that didn't take is
+        plain to see."""
+        if self.requested and (pref == self.requested or
+                               time.monotonic() - self.requested_at > SWITCH_SECONDS):
+            self.requested = ""
+        row = Text("  ", justify="center").join(
+            _cap(str(n), f" {label} ", "reverse" if value == pref else "")
+            for n, (value, label) in enumerate(SOURCES, 1))
+        cost = "switching…" if self.requested else _cost(pref)
+        return [Text.assemble(("Source  ", "dim"), row, justify="center"),
+                Text(cost, style="dim", justify="center")]
+
     def _message(self, s: State, link: str) -> tuple[str, str]:
         if link == "connecting":
             return "Connecting…", ""
@@ -271,6 +309,11 @@ class TUI:
                 _cap("space", "pause" if s.playing else "play"),
                 _cap("n", "next"),
             ]))
+        # Not just while a track plays: nothing playing is exactly when
+        # someone reaches for a different source. An older daemon doesn't
+        # publish its source.
+        if link == "up" and s.source_pref:
+            footer += [Rule(style="dim"), *self._sources(s.source_pref)]
         return Panel(
             _Fill(header, body, footer),
             # Given outright: under Live's alt screen the height never reaches
@@ -312,6 +355,30 @@ class TUI:
             return
         threading.Thread(target=proc.wait, daemon=True).start()   # reap it
 
+    def _pick_source(self, value: str) -> None:
+        """Save the pick where the daemon looks for it, as the popup does:
+        written whole and renamed into place, so it never reads half a word."""
+        with self.lock:
+            s, link = self.state, self._link()
+        if link != "up" or not s.source_pref:
+            self._say("the daemon is not running" if link != "up"
+                      else "this daemon can't switch sources")
+            return
+        # Already there -- unless another pick is still on its way, which this
+        # one has to overwrite or the daemon will go on and take it.
+        if value == s.source_pref and not self.requested:
+            return
+        target = config.source_file()
+        tmp = target.with_suffix(".tmp")
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(value)
+            tmp.replace(target)
+        except OSError as exc:
+            self._say(f"couldn't save the source: {exc.strerror}")
+            return
+        self.requested, self.requested_at = value, time.monotonic()
+
     def _key(self, key: str) -> None:
         if key in ("q", "Q"):
             self.quit = True
@@ -321,6 +388,8 @@ class TUI:
             self._control("next")
         elif key == "p":
             self._control("previous")
+        elif key in ("1", "2", "3", "4"):
+            self._pick_source(SOURCES[int(key) - 1][0])
 
     def _wait(self, fd: int | None) -> None:
         """Sit out one frame, handling any keys pressed meanwhile."""
