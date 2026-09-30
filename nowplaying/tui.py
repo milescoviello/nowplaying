@@ -24,6 +24,9 @@ from .state import State
 
 FPS = 15
 CONTEXT = 3  # lyric lines shown either side of the current one
+# The applet's default leadInMs: a line is taken as current this early, so it
+# is up by the time it is sung, and in step with the panel.
+LEAD_IN = 0.3
 RETRY_SECONDS = 2.0
 NOT_RUNNING = "not running — start it with: nowplaying daemon --source mpris"
 
@@ -125,10 +128,11 @@ class TUI:
     def _lyrics(self, s: State, pos: float, height: int) -> Group:
         if s.lyrics:
             idx = -1
+            t = pos + LEAD_IN
             lo, hi = 0, len(s.lyrics) - 1
             while lo <= hi:
                 mid = (lo + hi) // 2
-                if s.lyrics[mid][0] <= pos:
+                if s.lyrics[mid][0] <= t:
                     idx, lo = mid, mid + 1
                 else:
                     hi = mid - 1
