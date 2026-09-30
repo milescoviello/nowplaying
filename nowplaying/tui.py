@@ -1,8 +1,17 @@
 """Terminal karaoke view."""
 from __future__ import annotations
 
+import contextlib
+import os
+import re
+import select
+import signal
+import sys
+import termios
 import threading
 import time
+import tty
+from collections.abc import Iterator
 
 from rich.align import Align
 from rich.console import Console, Group
@@ -19,6 +28,42 @@ RETRY_SECONDS = 2.0
 NOT_RUNNING = "not running — start it with: nowplaying daemon --source mpris"
 
 
+# Escape sequences (arrows, function keys) are swallowed whole, so their
+# trailing letters can't be misread as key presses.
+_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|O.)")
+
+
+def _keys(data: str) -> list[str]:
+    keys, i = [], 0
+    while i < len(data):
+        m = _ESCAPE.match(data, i)
+        if m:
+            i = m.end()
+            continue
+        keys.append("esc" if data[i] == "\x1b" else data[i])
+        i += 1
+    return keys
+
+
+@contextlib.contextmanager
+def _keyboard() -> Iterator[int | None]:
+    """Stdin in cbreak mode -- keys arrive unbuffered and unechoed, Ctrl+C
+    still interrupts -- with the terminal put back however we leave.
+
+    Yields None when stdin isn't a terminal: the view still runs, just deaf.
+    """
+    if not sys.stdin.isatty():
+        yield None
+        return
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        yield fd
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
 def _fmt(seconds: float) -> str:
     seconds = max(0, int(seconds))
     return f"{seconds // 60}:{seconds % 60:02d}"
@@ -32,6 +77,7 @@ class TUI:
         self.alive: bool | None = None
         self.lock = threading.Lock()
         self.stop = threading.Event()
+        self.quit = False
 
     def _reader(self) -> None:
         """Follow the daemon, reconnecting whenever it goes away.
@@ -152,16 +198,39 @@ class TUI:
             padding=(1, 2),
         )
 
+    # --- keys --------------------------------------------------------------
+    def _key(self, key: str) -> None:
+        if key in ("q", "Q"):
+            self.quit = True
+
+    def _wait(self, fd: int | None) -> None:
+        """Sit out one frame, handling any keys pressed meanwhile."""
+        if fd is None:
+            time.sleep(1 / FPS)
+            return
+        ready, _, _ = select.select([fd], [], [], 1 / FPS)
+        if not ready:
+            return
+        data = os.read(fd, 1024)
+        if not data:   # the terminal went away
+            self.quit = True
+            return
+        for key in _keys(data.decode(errors="ignore")):
+            self._key(key)
+
     def run(self) -> int:
         console = Console()
-        thread = threading.Thread(target=self._reader, daemon=True)
-        thread.start()
+        threading.Thread(target=self._reader, daemon=True).start()
+        # A plain `kill` would otherwise skip every finally and leave the
+        # terminal in cbreak mode; exiting unwinds through them instead.
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         try:
-            with Live(self.render(console.size.height), console=console,
-                      refresh_per_second=FPS, screen=True) as live:
-                while True:
-                    live.update(self.render(console.size.height))
-                    time.sleep(1 / FPS)
+            # Live is left first, so the screen is back before the keyboard is.
+            with _keyboard() as fd, Live(console=console, screen=True,
+                                         auto_refresh=False) as live:
+                while not self.quit:
+                    live.update(self.render(console.size.height), refresh=True)
+                    self._wait(fd)
         except KeyboardInterrupt:
             pass
         finally:
