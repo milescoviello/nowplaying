@@ -213,9 +213,28 @@ the widget just says so and carries on.
 | `nowplaying daemon --source auto` | MPRIS first, audio fingerprinting as fallback |
 | `nowplaying status` | current state as JSON |
 | `nowplaying sources` | list audio sources |
-| `nowplaying tui` | terminal karaoke view |
+| `nowplaying tui` | the popup in a terminal (also plain `nowplaying`) |
 | `nowplaying overlay` | floating desktop HUD |
 | `nowplaying stop` | stop the daemon |
+
+### In a terminal
+
+`nowplaying tui` is the popup for a terminal: the track and its progress, the
+whole sheet with the line being sung highlighted and followed (with the same
+300 ms lead-in as the panel), the homelab readout when the daemon hands over to
+it, and the controls and source switch as keys. It reads the daemon's socket
+and never starts one, so a stopped daemon shows as not running rather than
+being replaced by an `auto` one that listens.
+
+| Key | |
+|---|---|
+| `space` `n` `p` | play/pause, next, previous — only when a local player has the track |
+| `1` `2` `3` `4` | source: Player, Auto, Speaker, Mic |
+| `o` | original script or Latin letters, for transliterated lyrics |
+| `h` | pin the homelab readout over the lyrics, like the panel's middle-click |
+| `↑` `↓` `j` `k` `PgUp` `PgDn` `Home` `End` | scroll the sheet; it goes back to following the music 4 s later |
+| `?` | list the keys and what each source does |
+| `q` | quit |
 
 ## The fingerprinting fallback
 

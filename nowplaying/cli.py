@@ -22,7 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "(auto = loopback when the laptop is playing, else mic)")
 
     # No --source: the TUI never starts a daemon, so it has none to pass on.
-    sub.add_parser("tui", help="terminal karaoke view (default)")
+    sub.add_parser("tui", help="the popup in a terminal: lyrics, controls, source (default)")
 
     ov = sub.add_parser("overlay", help="floating always-on-top desktop HUD")
     add_source(ov)

@@ -1,8 +1,9 @@
-"""Terminal version of the panel widget's popup.
+"""Terminal version of the panel widget and its popup.
 
 Renders the same state the applet does, read from the daemon's socket rather
-than its state file: the track, the whole lyrics sheet following the line being
-sung, and the track's progress.
+than its state file, and takes the popup's controls from the keyboard. The
+daemon still decides everything: keys only go to playerctl, or save a source
+for the daemon to pick up.
 """
 from __future__ import annotations
 
