@@ -169,6 +169,9 @@ class TUI:
         # The last pick, until the daemon either reports it or gives up.
         self.requested = ""
         self.requested_at = 0.0
+        # The panel's middle-click pin: the homelab readout even while music
+        # plays. Kept for this session only.
+        self.pinned = False
 
     def _reader(self) -> None:
         """Follow the daemon, reconnecting whenever it goes away.
@@ -276,8 +279,8 @@ class TUI:
         return ("No lyrics", s.message) if s.message else ("Looking up lyrics…", "")
 
     def _placeholder(self, console: Console, text: str, explanation: str,
-                     width: int, height: int) -> list[Text]:
-        items = [Text(text, style="bold")]
+                     width: int, height: int, style: str = "bold") -> list[Text]:
+        items = [Text(text, style=style)]
         if explanation:
             items.append(Text(explanation, style="dim"))
         rows, _ = _wrap(console, items, width)
@@ -291,6 +294,18 @@ class TUI:
         live = link == "up" and bool(s.title)
 
         def body(console: Console, width: int, height: int) -> list[Text]:
+            # The daemon decides when the idle display takes over (no player,
+            # or paused long enough); the pin forces it.
+            if link == "up" and (s.idle_active or self.pinned):
+                if s.idle_kind:
+                    # Only shout when something is actually wrong.
+                    return self._placeholder(console, s.idle_line1, s.idle_line2,
+                                             width, height,
+                                             "bold" if s.idle_ok else "bold red")
+                if self.pinned:
+                    return self._placeholder(console, "No homelab readout",
+                                             "The daemon has none to show.",
+                                             width, height)
             if live and s.lyrics:
                 return self._synced(console, s, pos, width, height)
             if live and s.lyrics_plain:
@@ -320,15 +335,21 @@ class TUI:
             # the panel, and the body is cut to fit it.
             height=height,
             title="nowplaying",
-            subtitle=self._subtitle(),
+            subtitle=self._subtitle(s, link),
             border_style="magenta" if live and s.playing else "grey35",
             padding=(0, 1),
         )
 
-    def _subtitle(self) -> Text:
+    def _subtitle(self, s: State, link: str) -> Text:
         if time.monotonic() < self.flash_until:
             return Text(self.flash, style="yellow")
-        return Text("q quit", style="dim")
+        caps = []
+        if self.pinned:
+            caps.append(_cap("h", "unpin"))
+        elif link == "up" and s.idle_kind:
+            caps.append(_cap("h", "homelab"))
+        caps.append(_cap("q", "quit"))
+        return Text("   ", style="dim").join(caps)
 
     # --- keys --------------------------------------------------------------
     def _say(self, text: str) -> None:
@@ -388,6 +409,8 @@ class TUI:
             self._control("next")
         elif key == "p":
             self._control("previous")
+        elif key == "h":
+            self.pinned = not self.pinned
         elif key in ("1", "2", "3", "4"):
             self._pick_source(SOURCES[int(key) - 1][0])
 
