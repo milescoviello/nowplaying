@@ -21,6 +21,9 @@ comes from: the player's own metadata, or listening to the speaker output or
 the mic ([Choosing the source](#choosing-the-source)). Middle-click pins the
 homelab readout over the lyrics until you middle-click again.
 
+Put it on the desktop instead and it lays the lyrics straight across the
+wallpaper ([On the desktop](#on-the-desktop)).
+
 ## How it works
 
 A daemon works out what's playing and writes a small JSON state file. The panel
@@ -118,6 +121,23 @@ The daemon decides when the idle display takes over — no player (or, for a
 source that listens, nothing identified), or paused or silent for longer than
 `PAUSE_IDLE_SECONDS` (15 s) — and publishes a single `idle_active` flag. The widget just obeys it, so the rule lives in exactly one place.
 
+## On the desktop
+
+Drag the same widget onto the desktop and it leaves the strip behind: the
+lyrics sheet sits right on the wallpaper, the line being sung held a little
+above the middle and the rest fading out towards the top and bottom, with the
+track and its cover above and a progress hairline below.
+
+* It is bare white text with a soft shadow, to read over a photo. For a busy
+  wallpaper, the widget's edit handle has a *Show background* button, which
+  puts a frame behind it and switches to the theme's colours.
+* The type scales with the widget: resize it to make the words bigger.
+* Hover it for the elapsed time, previous / play-pause / next, and — for
+  lyrics spelled out in Latin letters — the original-script switch.
+* Lyrics without timings are shown whole, to scroll by hand.
+* The homelab readout takes over by the same rule as in the panel, and
+  middle-click pins it the same way.
+
 ## Install
 
 Requires **Python 3.13** (see Notes), KDE Plasma 6, `playerctl`, and
@@ -128,10 +148,10 @@ git clone <this repo> ~/nowplaying && cd ~/nowplaying
 python3.13 -m venv .venv
 .venv/bin/pip install shazamio audioop-lts PyQt6 rich
 
-kpackagetool6 --type Plasma/Applet --install plasmoid   # the panel widget
+kpackagetool6 --type Plasma/Applet --install plasmoid   # the widget
 ```
 
-Add the widget to a panel, then start the daemon:
+Add the widget to a panel or the desktop, then start the daemon:
 
 ```bash
 ./bin/nowplaying daemon --source mpris
