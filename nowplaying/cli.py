@@ -21,8 +21,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="auto | loopback | mic | <pactl source name> "
                              "(auto = loopback when the laptop is playing, else mic)")
 
-    tui = sub.add_parser("tui", help="terminal karaoke view (default)")
-    add_source(tui)
+    # No --source: the TUI never starts a daemon, so it has none to pass on.
+    sub.add_parser("tui", help="terminal karaoke view (default)")
 
     ov = sub.add_parser("overlay", help="floating always-on-top desktop HUD")
     add_source(ov)
@@ -146,4 +146,4 @@ def main(argv: list[str] | None = None) -> int:
         return overlay.main(source=args.source, click_through=args.click_through,
                             install_rule=args.install_kwin_rule)
     from . import tui
-    return tui.main(source=args.source)
+    return tui.main()

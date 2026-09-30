@@ -15,6 +15,8 @@ from .state import State
 
 FPS = 15
 CONTEXT = 3  # lyric lines shown either side of the current one
+RETRY_SECONDS = 2.0
+NOT_RUNNING = "not running — start it with: nowplaying daemon --source mpris"
 
 
 def _fmt(seconds: float) -> str:
@@ -23,27 +25,35 @@ def _fmt(seconds: float) -> str:
 
 
 class TUI:
-    def __init__(self, source: str = "auto") -> None:
+    def __init__(self) -> None:
         self.state = State()
+        # None until the first connect attempt: the socket is the only way to
+        # tell, since a dead daemon's last state is all there is otherwise.
+        self.alive: bool | None = None
         self.lock = threading.Lock()
-        self.source = source
         self.stop = threading.Event()
 
     def _reader(self) -> None:
+        """Follow the daemon, reconnecting whenever it goes away.
+
+        Never starts one: the CLI's default source is `auto`, which opens the
+        audio device the moment nothing is playing -- the recording indicator
+        the MPRIS setup exists to avoid. Same reasoning as cmd_status.
+        """
         while not self.stop.is_set():
             try:
-                sock = client.connect(autostart=True, source=self.source)
+                sock = client.connect(autostart=False)
                 for state in client.stream(sock):
                     with self.lock:
-                        self.state = state
+                        self.state, self.alive = state, True
                     if self.stop.is_set():
                         return
-            except (ConnectionError, OSError):
+            except OSError:
                 pass
-            if self.stop.wait(2):
-                return
             with self.lock:
-                self.state.status = "reconnecting"
+                self.alive = False
+            if self.stop.wait(RETRY_SECONDS):
+                return
 
     # --- rendering -----------------------------------------------------------
     def _header(self, s: State, pos: float) -> Text:
@@ -124,6 +134,12 @@ class TUI:
         with self.lock:
             s = self.state
             pos = s.position()
+            alive = self.alive
+        if not alive:
+            label = "connecting…" if alive is None else NOT_RUNNING
+            return Panel(Align.center(Text(f"♪ {label}", style="bold yellow")),
+                         title="nowplaying", subtitle=Text("q to quit", style="dim"),
+                         border_style="grey35", padding=(1, 2))
         return Panel(
             Group(
                 Align.center(self._header(s, pos)),
@@ -153,5 +169,5 @@ class TUI:
         return 0
 
 
-def main(source: str = "auto") -> int:
-    return TUI(source=source).run()
+def main() -> int:
+    return TUI().run()
