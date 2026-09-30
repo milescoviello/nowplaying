@@ -20,6 +20,7 @@ import time
 import tty
 from collections.abc import Callable, Iterator
 
+from rich.align import Align
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.live import Live
 from rich.panel import Panel
@@ -55,8 +56,27 @@ SWITCH_SECONDS = 15.0
 
 # The popup's source buttons, in its order, picked outright with 1-4. No key
 # steps through them: going from Player to Mic that way would pass through
-# two sources that listen.
-SOURCES = (("mpris", "Player"), ("auto", "Auto"), ("loopback", "Speaker"), ("mic", "Mic"))
+# two sources that listen. The hints are the buttons' tooltips, shown on ?.
+SOURCES = (
+    ("mpris", "Player", "Player metadata only. Nothing is recorded."),
+    ("auto", "Auto", "Player metadata when a player has it, else listens: "
+                     "speaker output or the mic."),
+    ("loopback", "Speaker", "Identify whatever this machine is playing by "
+                            "listening to its output."),
+    ("mic", "Mic", "Identify whatever is playing in the room through the microphone."),
+)
+KEYS = (
+    ("space", "play / pause"),
+    ("n  p", "next / previous track"),
+    ("1-4", "pick the source"),
+    ("o", "original script / Latin letters"),
+    ("h", "pin the homelab readout"),
+    ("↑↓ j k", "scroll the lyrics"),
+    ("PgUp PgDn", "a page at a time"),
+    ("Home End", "to the top or bottom"),
+    ("?", "this list"),
+    ("q", "quit"),
+)
 
 # Escape sequences (arrows, function keys) are read whole, so their trailing
 # letters can't be misread as key presses; the ones not named here are dropped.
@@ -151,7 +171,7 @@ class _Fill:
     body can be cut to whatever room the other two leave it."""
 
     def __init__(self, header: list[RenderableType],
-                 body: Callable[[Console, int, int], list[Text]],
+                 body: Callable[[Console, int, int], list[RenderableType]],
                  footer: list[RenderableType]) -> None:
         self.header, self.body, self.footer = header, body, footer
 
@@ -199,6 +219,7 @@ class TUI:
         # The last frame's view of the sheet, for a scroll to start from.
         self.top = 0
         self.room = 0
+        self.help = False
 
     def _reader(self) -> None:
         """Follow the daemon, reconnecting whenever it goes away.
@@ -298,10 +319,21 @@ class TUI:
             self.requested = ""
         row = Text("  ", justify="center").join(
             _cap(str(n), f" {label} ", "reverse" if value == pref else "")
-            for n, (value, label) in enumerate(SOURCES, 1))
+            for n, (value, label, _) in enumerate(SOURCES, 1))
         cost = "switching…" if self.requested else _cost(pref)
         return [Text.assemble(("Source  ", "dim"), row, justify="center"),
                 Text(cost, style="dim", justify="center")]
+
+    def _help(self) -> list[RenderableType]:
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(no_wrap=True, style="bold magenta")
+        grid.add_column()
+        for key, what in KEYS:
+            grid.add_row(key, what)
+        grid.add_row("", "")
+        for n, (_, label, hint) in enumerate(SOURCES, 1):
+            grid.add_row(f"{n} {label}", Text(hint, style="dim"))
+        return [Text(""), Align.center(grid)]
 
     def _message(self, s: State, link: str) -> tuple[str, str]:
         if link == "connecting":
@@ -327,7 +359,9 @@ class TUI:
         return [Text("")] * max(0, (height - len(rows)) // 2) + rows
 
     def _view(self, s: State, link: str) -> str:
-        """What the body shows: idle | no-idle | synced | plain | message."""
+        """What the body shows: help | idle | no-idle | synced | plain | message."""
+        if self.help:
+            return "help"
         # The daemon decides when the idle display takes over (no player, or
         # paused long enough); the pin forces it.
         if link == "up" and (s.idle_active or self.pinned):
@@ -353,7 +387,9 @@ class TUI:
         if sheet != self.sheet:
             self.sheet, self.scroll = sheet, None
 
-        def body(console: Console, width: int, height: int) -> list[Text]:
+        def body(console: Console, width: int, height: int) -> list[RenderableType]:
+            if view == "help":
+                return self._help()
             if view == "idle":
                 # Only shout when something is actually wrong.
                 return self._placeholder(console, s.idle_line1, s.idle_line2,
@@ -407,7 +443,7 @@ class TUI:
             caps.append(_cap("h", "unpin"))
         elif link == "up" and s.idle_kind:
             caps.append(_cap("h", "homelab"))
-        caps.append(_cap("q", "quit"))
+        caps += [_cap("?", "close" if self.help else "keys"), _cap("q", "quit")]
         return Text("   ", style="dim").join(caps)
 
     # --- keys --------------------------------------------------------------
@@ -491,6 +527,8 @@ class TUI:
             self._control("next")
         elif key == "p":
             self._control("previous")
+        elif key == "?" or (key == "esc" and self.help):
+            self.help = not self.help
         elif key == "h":
             self.pinned = not self.pinned
         elif key == "o":
