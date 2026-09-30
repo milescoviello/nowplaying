@@ -29,7 +29,6 @@ from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderR
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress_bar import ProgressBar
-from rich.rule import Rule
 from rich.segment import Segment
 from rich.style import Style, StyleType
 from rich.table import Table
@@ -363,22 +362,22 @@ class TUI:
         about = "  ·  ".join(part for part in (s.player, s.source_label) if part)
         if about:
             rows.append(_line(about, QUIET))
-        rows.append(Rule(style="dim"))
+        rows.append(Text(""))
         return rows
 
     def _progress(self, s: State, pos: float) -> RenderableType:
         # An unknown length has nothing to be a fraction of.
         if s.duration <= 0:
-            return _line(_fmt(pos), "dim")
+            return _line(_fmt(pos), QUIET)
         grid = Table.grid(expand=True, padding=(0, 1))
         grid.add_column(no_wrap=True)
         grid.add_column(ratio=1)
         grid.add_column(no_wrap=True)
-        grid.add_row(Text(_fmt(min(pos, s.duration)), style="dim"),
+        grid.add_row(Text(_fmt(min(pos, s.duration)), style=QUIET),
                      ProgressBar(total=s.duration, completed=min(pos, s.duration),
                                  style=TROUGH, complete_style=self.accent,
                                  finished_style=self.accent),
-                     Text(_fmt(s.duration), style="dim"))
+                     Text(_fmt(s.duration), style=QUIET))
         return grid
 
     def _synced(self, console: Console, s: State, pos: float,
@@ -433,7 +432,7 @@ class TUI:
         self.top, self.room = top, height
         return top
 
-    def _sources(self, pref: str) -> list[RenderableType]:
+    def _sources(self, pref: str) -> tuple[Text, Text]:
         """Where the daemon gets the track from. Marked by what the daemon
         reports, never by the key pressed, so a switch that didn't take is
         plain to see."""
@@ -447,7 +446,7 @@ class TUI:
         cost = Text("switching…", style=self.accent) if self.requested \
             else Text(_cost(pref), style=QUIET)
         cost.justify = "center"
-        return [Text.assemble(("Source  ", QUIET), row, justify="center"), cost]
+        return Text.assemble(("Source  ", QUIET), row), cost
 
     def _help(self) -> list[RenderableType]:
         grid = Table.grid(padding=(0, 2))
@@ -476,10 +475,10 @@ class TUI:
         return ("No lyrics", s.message) if s.message else ("Looking up lyrics…", "")
 
     def _placeholder(self, console: Console, text: str, explanation: str,
-                     width: int, height: int, style: str = "bold") -> list[Text]:
+                     width: int, height: int, style: StyleType = TITLE) -> list[Text]:
         items = [Text(text, style=style)]
         if explanation:
-            items.append(Text(explanation, style="dim"))
+            items.append(Text(explanation, style=QUIET))
         rows, _ = _wrap(console, items, width)
         return [Text("")] * max(0, (height - len(rows)) // 2) + rows
 
@@ -502,7 +501,7 @@ class TUI:
                 return "plain"
         return "message"
 
-    def render(self, height: int) -> Panel:
+    def render(self, width: int, height: int) -> Panel:
         with self.lock:
             s, link = self.state, self._link()
         pos = s.position()
@@ -533,13 +532,14 @@ class TUI:
             return self._placeholder(console, *self._message(s, link), width, height)
 
         header = self._header(s) if live else []
-        footer: list[RenderableType] = []
+        footer: list[RenderableType] = [Text("")]
         if live:
-            footer += [Rule(style="dim"), self._progress(s, pos)]
+            footer.append(self._progress(s, pos))
+        buttons = []
         # Only when there's a local player to obey them: a Plex client on
         # another device is out of playerctl's reach.
         if live and s.player:
-            footer.append(Text("   ", justify="center").join([
+            buttons.append(Text("   ").join([
                 _cap("p", "previous", self.accent),
                 _cap("space", "pause" if s.playing else "play", self.accent),
                 _cap("n", "next", self.accent),
@@ -547,8 +547,19 @@ class TUI:
         # Not just while a track plays: nothing playing is exactly when
         # someone reaches for a different source. An older daemon doesn't
         # publish its source.
+        cost = None
         if link == "up" and s.source_pref:
-            footer += [Rule(style="dim"), *self._sources(s.source_pref)]
+            sources, cost = self._sources(s.source_pref)
+            buttons.append(sources)
+        gap = 8
+        # One row when they fit side by side, inside the border and padding.
+        if sum(b.cell_len for b in buttons) + gap * (len(buttons) - 1) <= width - 6:
+            buttons = [Text(" " * gap).join(buttons)] if buttons else []
+        for row in buttons:
+            row.justify = "center"
+            footer.append(row)
+        if cost is not None:
+            footer.append(cost)
         return Panel(
             _Fill(header, body, footer),
             # Given outright: under Live's alt screen the height never reaches
@@ -557,7 +568,7 @@ class TUI:
             title="nowplaying",
             subtitle=self._subtitle(s, link, view),
             border_style=self._border(s, live, view),
-            padding=(0, 1),
+            padding=(0, 2),
         )
 
     def _border(self, s: State, live: bool, view: str) -> str:
@@ -701,7 +712,7 @@ class TUI:
             with _keyboard() as fd, Live(console=console, screen=True,
                                          auto_refresh=False) as live:
                 while not self.quit:
-                    live.update(self.render(console.size.height), refresh=True)
+                    live.update(self.render(*console.size), refresh=True)
                     self._wait(fd)
         except KeyboardInterrupt:
             pass
