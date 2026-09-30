@@ -163,6 +163,9 @@ def _line(text: str, style: str = "") -> Text:
 # The line being sung, and the plain sheet, which has no line to single out.
 SUNG = Style(color="#ffffff", bold=True)
 SHEET = Style(color="#b4b4b4")
+TITLE = Style(color="#ffffff", bold=True)
+BYLINE = Style(color="#b4b4b4")
+QUIET = Style(color="#787878")
 
 
 @functools.lru_cache(maxsize=64)
@@ -286,11 +289,14 @@ class TUI:
 
     # --- rendering -----------------------------------------------------------
     def _header(self, s: State) -> list[RenderableType]:
-        rows: list[RenderableType] = [_line(s.title, "bold")]
-        if s.artist:
-            rows.append(_line(s.artist))
-        if s.album:
-            rows.append(_line(s.album, "dim"))
+        rows: list[RenderableType] = [_line(s.title, TITLE)]
+        # The byline the popup and the desktop widget both use.
+        byline = "  ·  ".join(part for part in (s.artist, s.album) if part)
+        if byline:
+            rows.append(_line(byline.upper(), BYLINE))
+        about = "  ·  ".join(part for part in (s.player, s.source_label) if part)
+        if about:
+            rows.append(_line(about, QUIET))
         rows.append(Rule(style="dim"))
         return rows
 
