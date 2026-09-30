@@ -12,6 +12,7 @@ import os
 import re
 import select
 import signal
+import subprocess
 import sys
 import termios
 import threading
@@ -44,6 +45,7 @@ STALE_SECONDS = 20.0
 # are read downward, so show more of what's coming. As in the popup.
 FOLLOW_AT = 0.4
 START_HINT = "start it with: nowplaying daemon --source mpris"
+FLASH_SECONDS = 3.0      # how long a key's "can't do that" note stays up
 
 # Escape sequences (arrows, function keys) are swallowed whole, so their
 # trailing letters can't be misread as key presses.
@@ -85,6 +87,11 @@ def _fmt(seconds: float) -> str:
     t = max(0, int(seconds))
     h, m, s = t // 3600, t // 60 % 60, t % 60
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _cap(key: str, label: str) -> Text:
+    """A key and what it does, as the button it stands in for."""
+    return Text.assemble((key, "bold magenta"), " ", label)
 
 
 def _line(text: str, style: str = "") -> Text:
@@ -136,6 +143,8 @@ class TUI:
         self.lock = threading.Lock()
         self.stop = threading.Event()
         self.quit = False
+        self.flash = ""
+        self.flash_until = 0.0
 
     def _reader(self) -> None:
         """Follow the daemon, reconnecting whenever it goes away.
@@ -254,21 +263,64 @@ class TUI:
         footer: list[RenderableType] = []
         if live:
             footer += [Rule(style="dim"), self._progress(s, pos)]
+        # Only when there's a local player to obey them: a Plex client on
+        # another device is out of playerctl's reach.
+        if live and s.player:
+            footer.append(Text("   ", justify="center").join([
+                _cap("p", "previous"),
+                _cap("space", "pause" if s.playing else "play"),
+                _cap("n", "next"),
+            ]))
         return Panel(
             _Fill(header, body, footer),
             # Given outright: under Live's alt screen the height never reaches
             # the panel, and the body is cut to fit it.
             height=height,
             title="nowplaying",
-            subtitle=Text("q quit", style="dim"),
+            subtitle=self._subtitle(),
             border_style="magenta" if live and s.playing else "grey35",
             padding=(0, 1),
         )
 
+    def _subtitle(self) -> Text:
+        if time.monotonic() < self.flash_until:
+            return Text(self.flash, style="yellow")
+        return Text("q quit", style="dim")
+
     # --- keys --------------------------------------------------------------
+    def _say(self, text: str) -> None:
+        self.flash, self.flash_until = text, time.monotonic() + FLASH_SECONDS
+
+    def _control(self, verb: str) -> None:
+        """Hand a transport command to playerctl. The daemon notices the
+        change on its next poll, so no state is touched here."""
+        with self.lock:
+            s, link = self.state, self._link()
+        if link != "up":
+            self._say("the daemon is not running")
+            return
+        if not s.player:
+            self._say("nothing local to control")
+            return
+        try:
+            proc = subprocess.Popen(["playerctl", "--player", s.player, verb],
+                                    stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+        except OSError:
+            self._say("playerctl is not installed")
+            return
+        threading.Thread(target=proc.wait, daemon=True).start()   # reap it
+
     def _key(self, key: str) -> None:
         if key in ("q", "Q"):
             self.quit = True
+        elif key == " ":
+            self._control("play-pause")
+        elif key == "n":
+            self._control("next")
+        elif key == "p":
+            self._control("previous")
 
     def _wait(self, fd: int | None) -> None:
         """Sit out one frame, handling any keys pressed meanwhile."""
