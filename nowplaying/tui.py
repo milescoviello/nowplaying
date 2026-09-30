@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import bisect
 import contextlib
+import functools
+import math
 import os
 import re
 import select
@@ -28,6 +30,7 @@ from rich.panel import Panel
 from rich.progress_bar import ProgressBar
 from rich.rule import Rule
 from rich.segment import Segment
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
@@ -157,6 +160,31 @@ def _line(text: str, style: str = "") -> Text:
     return Text(text, style=style, no_wrap=True, overflow="ellipsis")
 
 
+# The line being sung, and the plain sheet, which has no line to single out.
+SUNG = Style(color="#ffffff", bold=True)
+SHEET = Style(color="#b4b4b4")
+
+
+@functools.lru_cache(maxsize=64)
+def _grey(level: int) -> Style:
+    return Style(color=f"#{level:02x}{level:02x}{level:02x}")
+
+
+def _fade(middle: float, height: int) -> Style:
+    """The grey for a line whose middle sits `middle` rows down a sheet
+    `height` rows tall: brightest at the line being sung, fading out towards
+    the top and bottom edges, as the desktop widget's lines do."""
+    focus = height * FOLLOW_AT
+    if middle < focus:
+        near = middle / max(1.0, focus)
+    else:
+        near = (height - 1 - middle) / max(1.0, height - 1 - focus)
+    near = min(1.0, max(0.0, near))
+    # sqrt keeps the lines around the sung one readable, and the fall-off
+    # at the edges.
+    return _grey(round(255 * (0.16 + 0.6 * math.sqrt(near))))
+
+
 def _wrap(console: Console, items: list[Text], width: int) -> tuple[list[Text], list[int]]:
     """Each item wrapped and centred to the width, plus the row each starts on."""
     rows: list[Text] = []
@@ -220,6 +248,9 @@ class TUI:
         # The last frame's view of the sheet, for a scroll to start from.
         self.top = 0
         self.room = 0
+        # The synced sheet wrapped to the width, kept until either changes:
+        # (what it was wrapped from, rows, the row each line starts on).
+        self.wrapped: tuple = ((), [], [])
         self.help = False
 
     def _reader(self) -> None:
@@ -281,35 +312,53 @@ class TUI:
                 width: int, height: int) -> list[Text]:
         current = bisect.bisect_right(s.lyrics, pos + LEAD_IN, key=lambda l: l[0]) - 1
         # Same timings either way, so the current line holds.
-        lines = s.lyrics_original if self.original and _has_original(s) else s.lyrics
-        items = [Text(text or "♪", style="bold" if i == current else "dim")
-                 for i, (_, text) in enumerate(lines)]
-        rows, starts = _wrap(console, items, width)
-        rows = [Text(""), *rows, Text("")]
+        original = self.original and _has_original(s)
+        lines = s.lyrics_original if original else s.lyrics
+        made = (s.key, len(lines), original, width)
+        if self.wrapped[0] != made:
+            rows, starts = _wrap(console, [Text(text or "♪") for _, text in lines], width)
+            # A blank row either end; the sentinel is where the last line ends.
+            self.wrapped = (made, [Text(""), *rows, Text("")],
+                            [start + 1 for start in starts] + [len(rows) + 1])
+        _, rows, starts = self.wrapped
         if self.scroll is not None and time.monotonic() - self.scrolled_at > RESUME_SECONDS:
             self.scroll = None
         top = 0
         if self.scroll is not None:
             top = self.scroll
         elif current >= 0:
-            start = starts[current] + 1
-            end = starts[current + 1] + 1 if current + 1 < len(starts) else len(rows) - 1
-            top = round((start + end) / 2 - height * FOLLOW_AT)
-        return self._cut(rows, top, height)
+            top = round((starts[current] + starts[current + 1]) / 2 - height * FOLLOW_AT)
+        top = self._settle(len(rows), top, height)
+        out = [Text("")] * min(height, len(rows))
+        for i in range(len(lines)):
+            first, last = max(starts[i], top), min(starts[i + 1], top + height)
+            if first >= last:
+                continue
+            # A wrapped line fades as one, by where its middle is.
+            style = SUNG if i == current else \
+                _fade((starts[i] + starts[i + 1] - 1) / 2 - top, height)
+            for r in range(first, last):
+                row = rows[r].copy()
+                row.style = style
+                out[r - top] = row
+        return out
 
     def _plain(self, console: Console, s: State, width: int, height: int) -> list[Text]:
         # No timings: the sheet as published, from the top. Nothing to follow,
         # so it stays wherever it is scrolled to.
-        items = [Text(line) for line in s.lyrics_plain.splitlines()]
+        items = [Text(line, style=SHEET) for line in s.lyrics_plain.splitlines()]
         rows, _ = _wrap(console, items, width)
-        return self._cut([Text(""), *rows, Text("")], self.scroll or 0, height)
+        rows = [Text(""), *rows, Text("")]
+        top = self._settle(len(rows), self.scroll or 0, height)
+        return rows[top:top + height]
 
-    def _cut(self, rows: list[Text], top: int, height: int) -> list[Text]:
-        top = max(0, min(top, len(rows) - height))
+    def _settle(self, total: int, top: int, height: int) -> int:
+        """Clamp the sheet's top row to what it has, and note it for scrolling."""
+        top = max(0, min(top, total - height))
         if self.scroll is not None:
             self.scroll = top   # so scrolling back from past the end is immediate
         self.top, self.room = top, height
-        return rows[top:top + height]
+        return top
 
     def _sources(self, pref: str) -> list[RenderableType]:
         """Where the daemon gets the track from. Marked by what the daemon
