@@ -1,5 +1,5 @@
 /*
- * nowplaying panel ticker
+ * nowplaying panel ticker, and its desktop form
  *
  * Reads the state file the daemon mirrors to disk (QML has no unix socket API)
  * and scrolls lyrics upward through a strip in the panel: the line being sung
@@ -9,6 +9,9 @@
  * Left-click opens a popup with the whole lyrics sheet and the player's
  * controls. The daemon still decides everything; the popup only renders the
  * same state and hands play/pause/next to playerctl.
+ *
+ * Dropped on the desktop instead, the widget skips the strip and lays the
+ * lyrics sheet straight on the wallpaper (DesktopFace.qml).
  */
 import QtCore
 import QtQuick
@@ -25,8 +28,19 @@ PlasmoidItem {
     id: root
 
     // The ticker is the compact representation, so it stays inline in the
-    // panel while the full lyrics open in the standard applet popup.
-    preferredRepresentation: compactRepresentation
+    // panel while the full lyrics open in the standard applet popup. On the
+    // desktop there's room for the sheet itself, so it is shown inline.
+    readonly property bool onDesktop:
+        Plasmoid.formFactor === PlasmaCore.Types.Planar
+        || Plasmoid.formFactor === PlasmaCore.Types.MediaCenter
+    preferredRepresentation: onDesktop ? fullRepresentation : compactRepresentation
+    fullRepresentation: onDesktop ? desktopFace : popupSheet
+
+    // Bare text on the wallpaper by default, like a clock on the desktop;
+    // the edit handle's "Show background" button puts a frame behind it.
+    // Panels ignore both.
+    Plasmoid.backgroundHints: PlasmaCore.Types.NoBackground
+        | PlasmaCore.Types.ConfigurableBackground
 
     // QML's XMLHttpRequest refuses to read local files unless the whole session
     // runs with QML_XHR_ALLOW_FILE_READ=1, so the state file is read through
@@ -288,10 +302,10 @@ PlasmoidItem {
 
     Timer {  // drives the current line, the slide and the sideways creep
         interval: 20
-        // Also while the popup is open: its progress bar needs a moving
-        // position even when there are no lyrics to time.
+        // Also while the popup is open, or on the desktop: the progress bar
+        // needs a moving position even when there are no lyrics to time.
         running: root.playing && !root.stale
-            && (root.lyrics.length > 0 || root.expanded)
+            && (root.lyrics.length > 0 || root.expanded || root.onDesktop)
         repeat: true
         triggeredOnStart: true
         onTriggered: root.refreshLine()
@@ -511,8 +525,19 @@ PlasmoidItem {
         }
     }
 
+    // --- desktop ------------------------------------------------------------
+    Component {
+        id: desktopFace
+        DesktopFace {
+            applet: root
+            overWallpaper: !(Plasmoid.effectiveBackgroundHints
+                & (PlasmaCore.Types.StandardBackground
+                   | PlasmaCore.Types.TranslucentBackground))
+        }
+    }
+
     // --- popup --------------------------------------------------------------
-    fullRepresentation: PlasmaExtras.Representation {
+    readonly property Component popupSheet: PlasmaExtras.Representation {
         id: popup
 
         Layout.minimumWidth: Kirigami.Units.gridUnit * 18

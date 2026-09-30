@@ -8,7 +8,7 @@
             }
         ],
         "Category": "Multimedia",
-        "Description": "Scrolls the lyrics of whatever is currently playing through your panel",
+        "Description": "Scrolls the lyrics of whatever is currently playing through your panel, or lays them across your desktop",
         "Icon": "media-optical-audio",
         "Id": "org.kde.nowplaying",
         "License": "MIT",

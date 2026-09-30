@@ -9,7 +9,7 @@ Kirigami.FormLayout {
 
     QQC2.SpinBox {
         id: widthSpin
-        Kirigami.FormData.label: i18n("Ticker width (px):")
+        Kirigami.FormData.label: i18n("Ticker width in a panel (px):")
         from: 120
         to: 1600
         stepSize: 20
