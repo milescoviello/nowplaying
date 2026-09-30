@@ -247,6 +247,17 @@ PlasmoidItem {
         runner.connectSource("playerctl --player " + shellQuote(player) + " " + verb);
     }
 
+    // Both persisted in the applet's config, so they outlive a plasmashell
+    // restart.
+    function togglePin() {
+        plasmoid.configuration.pinFleet = !plasmoid.configuration.pinFleet;
+        plasmoid.configuration.writeConfig();
+    }
+    function setOriginalScript(on) {
+        plasmoid.configuration.originalScript = on;
+        plasmoid.configuration.writeConfig();
+    }
+
     // Saved rather than sent: the daemon has no channel QML can speak, and a
     // file outlives a restart. Written whole and renamed into place, so the
     // daemon never reads half a word.
@@ -315,10 +326,7 @@ PlasmoidItem {
         MouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.MiddleButton
-            onClicked: {
-                plasmoid.configuration.pinFleet = !plasmoid.configuration.pinFleet;
-                plasmoid.configuration.writeConfig();
-            }
+            onClicked: root.togglePin()
         }
 
         Component.onCompleted: {
@@ -587,10 +595,7 @@ PlasmoidItem {
                     icon.name: "character-set"
                     checkable: true
                     checked: plasmoid.configuration.originalScript
-                    onToggled: {
-                        plasmoid.configuration.originalScript = checked;
-                        plasmoid.configuration.writeConfig();
-                    }
+                    onToggled: root.setOriginalScript(checked)
                     Accessible.name: "Original script"
                     PlasmaComponents.ToolTip.text: checked
                         ? "Showing the original script; click for Latin letters"
