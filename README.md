@@ -77,6 +77,11 @@ Fingerprinting sends audio fingerprints to Shazam, and holding the device open
 lights Plasma's recording indicator the whole time — which is why the autostart
 entry runs `mpris`.
 
+The visualizers are the one exception to "never", whatever the source: turned
+on, they listen to the speaker output while a track plays, so the recording
+indicator is on then too. Nothing leaves the machine, and both are off until
+you turn them on.
+
 The source can be switched while the daemon runs, from the popup or by writing
 one of those words to `~/.config/nowplaying/source`:
 
@@ -137,6 +142,17 @@ track and its cover above and a progress hairline below.
 * Lyrics without timings are shown whole, to scroll by hand.
 * The homelab readout takes over by the same rule as in the panel, and
   middle-click pins it the same way.
+* A visualizer, the TUI's bars along the bottom, is in the hover row and the
+  settings. It's off by default: while it's on and a track plays, the daemon
+  listens to the speaker output for it.
+
+The widget can't listen for itself (QML has no audio capture), so the daemon
+does it, and streams the bars over localhost while the widget is watching. It
+answers on a random port, and only to requests carrying the token it writes to
+`$XDG_RUNTIME_DIR/nowplaying.vis`, which only you can read. A web page can
+reach localhost too, and shouldn't be able to switch the capture on. Within a
+few seconds of the widget hanging up, because the visualizer is off, the music
+paused or the widget gone, the daemon stops listening.
 
 ## Install
 
@@ -298,6 +314,7 @@ can other displays. Treat these keys as stable:
 | `lyrics_plain` | the whole text without timings, in Latin letters when transliterated |
 | `cover_file` | local path to artwork, or empty |
 | `idle_active` `idle_kind` `idle_line1` `idle_line2` `idle_ok` | idle display |
+| `vis_listening` | the daemon is listening to the speaker output for the desktop visualizer |
 
 **Position is published as an anchor, not a ticking number.** Rather than write
 the position many times a second, the daemon writes the pair
@@ -322,6 +339,8 @@ nowplaying/
   daemon.py           detection loop, state file, unix socket
   state.py            shared state, anchor-based position
   audio.py            capture + RMS (fingerprint fallback)
+  spectrum.py         the visualizers' listener + bar maths
+  visualizer.py       the bars streamed to the desktop widget
   recognizer.py       Shazam wrapper + offset maths
   tui.py / overlay.py optional UIs
 plasmoid/             the Plasma 6 applet (QML)
