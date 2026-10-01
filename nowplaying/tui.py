@@ -454,10 +454,11 @@ class TUI:
         self.top, self.room = top, height
         return top
 
-    def _sources(self, pref: str) -> tuple[Text, Text]:
+    def _sources(self, pref: str, desktop_listening: bool = False) -> tuple[Text, Text]:
         """Where the daemon gets the track from. Marked by what the daemon
         reports, never by the key pressed, so a switch that didn't take is
-        plain to see."""
+        plain to see. desktop_listening: the daemon is listening for the
+        desktop widget's visualizer, which costs the same as this one's."""
         if self.requested and (pref == self.requested or
                                time.monotonic() - self.requested_at > SWITCH_SECONDS):
             self.requested = ""
@@ -466,7 +467,7 @@ class TUI:
             _cap(str(n), f" {label} ", self.accent, chosen if value == pref else "")
             for n, (value, label, _) in enumerate(SOURCES, 1))
         note = _cost(pref)
-        if self.listener.started():
+        if self.listener.started() or desktop_listening:
             note = ("The visualizer listens to the speaker output: recording "
                     "indicator on, nothing leaves this machine." if pref == "mpris"
                     else note + " The visualizer listens too, locally.")
@@ -652,7 +653,7 @@ class TUI:
         # publish its source.
         cost = None
         if link == "up" and s.source_pref:
-            sources, cost = self._sources(s.source_pref)
+            sources, cost = self._sources(s.source_pref, s.vis_listening)
             buttons.append(sources)
         gap = 8
         # One row when they fit side by side, inside the border and padding.
