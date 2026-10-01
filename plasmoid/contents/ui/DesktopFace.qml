@@ -480,8 +480,10 @@ Item {
                 }
                 Rectangle {
                     height: parent.height
-                    width: parent.width * Math.max(0, Math.min(1,
-                        face.applet.nowPos / Math.max(1, face.applet.duration)))
+                    // Whole pixels: the position moves every 20 ms, and each
+                    // change re-renders the shadow under the whole face.
+                    width: Math.round(parent.width * Math.max(0, Math.min(1,
+                        face.applet.nowPos / Math.max(1, face.applet.duration))))
                     radius: height / 2
                     color: face.ink
                     opacity: 0.85
