@@ -51,6 +51,12 @@ PlasmoidItem {
             .toString().replace("file://", "")
         + "/nowplaying/state.json"
     readonly property string readCommand: "cat " + statePath
+    // Where the daemon says how to reach the visualizer's feed; private to
+    // this user, as the URL carries the token that switches capture on.
+    readonly property string visEndpointPath:
+        StandardPaths.writableLocation(StandardPaths.RuntimeLocation)
+            .toString().replace("file://", "")
+        + "/nowplaying.vis"
     // Where a source picked in the popup is saved for the daemon to pick up.
     readonly property string configDir:
         StandardPaths.writableLocation(StandardPaths.GenericConfigLocation)
@@ -94,6 +100,12 @@ PlasmoidItem {
     // The daemon decides when idle content takes over (no player, or paused
     // long enough) -- don't re-derive that rule here.
     property bool idleActive: false
+    // Desktop only, and opt-in: the bars need the daemon to listen to the
+    // speaker output while a track plays.
+    readonly property bool visualizerOn: plasmoid.configuration.visualizer
+    property string visEndpoint: ""
+    // The daemon is listening for a visualizer, this one or another.
+    property bool visListening: false
     // Middle-click pin: force the homelab readout even while music plays.
     // Persisted, so it survives a plasmashell restart.
     readonly property bool pinFleet: plasmoid.configuration.pinFleet
@@ -170,6 +182,7 @@ PlasmoidItem {
         idleLine2 = d.idle_line2 || "";
         idleOk = d.idle_ok !== false;
         idleActive = !!d.idle_active;
+        visListening = !!d.vis_listening;
         // Outside the key check: plain text arrives without changing the
         // (empty) line count, so trackKey would never notice it.
         lyricsPlain = (d.lyrics && d.lyrics.length) ? "" : (d.lyrics_plain || "");
@@ -270,6 +283,24 @@ PlasmoidItem {
     function setOriginalScript(on) {
         plasmoid.configuration.originalScript = on;
         plasmoid.configuration.writeConfig();
+    }
+    function setVisualizer(on) {
+        plasmoid.configuration.visualizer = on;
+        plasmoid.configuration.writeConfig();
+    }
+
+    // Read when the visualizer wants it, and again whenever it stops
+    // answering: a restarted daemon has a new port and token.
+    function refreshVisEndpoint() {
+        endpointReader.connectSource("cat " + shellQuote(visEndpointPath));
+    }
+    Plasma5Support.DataSource {
+        id: endpointReader
+        engine: "executable"
+        onNewData: function(sourceName, data) {
+            root.visEndpoint = data["exit code"] === 0 ? data["stdout"].trim() : "";
+            disconnectSource(sourceName);
+        }
     }
 
     // Saved rather than sent: the daemon has no channel QML can speak, and a
@@ -766,6 +797,16 @@ PlasmoidItem {
                     opacity: 0.7
                     text: {
                         if (root.requestedSource.length) return "switching…";
+                        if (!root.visListening) return sourceCost();
+                        // The source can promise no capture; the visualizer
+                        // listens all the same.
+                        if (root.sourcePref === "mpris")
+                            return "Nothing captured for the track, but the desktop "
+                                + "visualizer is listening to the speaker output: "
+                                + "recording indicator on.";
+                        return sourceCost() + " The desktop visualizer is listening too.";
+                    }
+                    function sourceCost() {
                         switch (root.sourcePref) {
                         case "mpris": return "No audio capture.";
                         case "auto": return "Listens when no player describes the "

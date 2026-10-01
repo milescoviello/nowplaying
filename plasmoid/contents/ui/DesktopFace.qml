@@ -385,6 +385,14 @@ Item {
                 }
             }
 
+            // --- room for the visualizer, when it's on (drawn further down)
+            Item {
+                id: visBand
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.round(face.lyricSize * 2.4)
+                visible: face.applet.visualizerOn
+            }
+
             // --- on hover: where we are, and the player's controls
             // Its room is kept while hidden: showing it must not shrink the
             // stage and jolt the sheet.
@@ -438,6 +446,12 @@ Item {
                     label: "Original script"
                     checked: face.applet.showOriginal
                     onActivated: face.applet.setOriginalScript(!face.applet.showOriginal)
+                }
+                GlyphButton {
+                    iconName: "view-media-visualization"
+                    label: "Visualizer"
+                    checked: face.applet.visualizerOn
+                    onActivated: face.applet.setVisualizer(!face.applet.visualizerOn)
                 }
 
                 Item { Layout.fillWidth: true }
@@ -532,6 +546,33 @@ Item {
                     opacity: 0.6
                 }
             }
+        }
+    }
+
+    // --- bars for whatever the speaker is playing, over the room kept for
+    // them. Outside the content's shadow layer: they change every frame, and
+    // inside it would have the whole face re-rendered and re-blurred with
+    // them; they get a shadow of their own instead.
+    Visualizer {
+        x: content.x + visBand.x
+        y: content.y + visBand.y
+        width: visBand.width
+        height: visBand.height
+        visible: visBand.visible
+        bars: Math.max(12, Math.min(96, Math.round(width / face.metaSize)))
+        color: face.ink
+        url: face.applet.visEndpoint
+        // Only while there's music to see: off, paused or hidden, and the
+        // daemon stops listening a few seconds later.
+        active: visible && face.applet.playing && !face.applet.stale
+        onNeedEndpoint: face.applet.refreshVisEndpoint()
+
+        layer.enabled: face.effects && face.overWallpaper
+        layer.effect: MultiEffect {
+            shadowEnabled: true
+            shadowColor: "#99000000"
+            shadowBlur: 0.6
+            shadowVerticalOffset: 2
         }
     }
 }

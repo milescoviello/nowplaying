@@ -18,6 +18,11 @@
       <label>Middle-click pin: always show homelab stats instead of lyrics</label>
       <default>false</default>
     </entry>
+    <entry name="visualizer" type="Bool">
+      <label>Desktop: bars for whatever the speaker is playing. The daemon
+      listens to the speaker output for them while a track plays</label>
+      <default>false</default>
+    </entry>
     <entry name="originalScript" type="Bool">
       <label>Popup: show lyrics in their original script rather than spelled
       out in Latin letters</label>
