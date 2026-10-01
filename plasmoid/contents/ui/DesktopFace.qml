@@ -123,78 +123,85 @@ Item {
             spacing: face.metaSize * 0.8
 
             // --- the track: cover beside title and artist, centred as one
-            RowLayout {
+            Item {
                 Layout.fillWidth: true
-                spacing: face.metaSize
+                Layout.preferredHeight: Math.max(coverSlot.visible ? coverSlot.side : 0,
+                                                 trackWords.implicitHeight)
 
-                Item { Layout.fillWidth: true }
+                Row {
+                    id: trackRow
+                    anchors.centerIn: parent
+                    spacing: face.metaSize
 
-                Item {
-                    id: coverSlot
-                    readonly property real side: Math.round(face.metaSize * 3.6)
-                    Layout.preferredWidth: side
-                    Layout.preferredHeight: side
-                    // No art, no placeholder: the title stands alone.
-                    visible: cover.status === Image.Ready
+                    Item {
+                        id: coverSlot
+                        readonly property real side: Math.round(face.metaSize * 3.6)
+                        width: side
+                        height: side
+                        anchors.verticalCenter: parent.verticalCenter
+                        // No art, no placeholder: the title stands alone.
+                        visible: cover.status === Image.Ready
 
-                    Image {
-                        id: cover
-                        anchors.fill: parent
-                        source: face.applet.coverFile.length
-                            ? "file://" + face.applet.coverFile : ""
-                        sourceSize.width: coverSlot.side * 2
-                        sourceSize.height: coverSlot.side * 2
-                        fillMode: Image.PreserveAspectCrop
-                        smooth: true
-                        asynchronous: true
-                        visible: !face.effects
+                        Image {
+                            id: cover
+                            anchors.fill: parent
+                            source: face.applet.coverFile.length
+                                ? "file://" + face.applet.coverFile : ""
+                            sourceSize.width: coverSlot.side * 2
+                            sourceSize.height: coverSlot.side * 2
+                            fillMode: Image.PreserveAspectCrop
+                            smooth: true
+                            asynchronous: true
+                            visible: !face.effects
+                        }
+                        MultiEffect {
+                            anchors.fill: cover
+                            source: cover
+                            visible: face.effects
+                            maskEnabled: true
+                            maskSource: coverMask
+                            maskThresholdMin: 0.5
+                            maskSpreadAtMin: 1.0
+                        }
+                        Rectangle {
+                            id: coverMask
+                            anchors.fill: cover
+                            radius: coverSlot.side * 0.08
+                            layer.enabled: true
+                            visible: false
+                        }
                     }
-                    MultiEffect {
-                        anchors.fill: cover
-                        source: cover
-                        visible: face.effects
-                        maskEnabled: true
-                        maskSource: coverMask
-                        maskThresholdMin: 0.5
-                        maskSpreadAtMin: 1.0
-                    }
-                    Rectangle {
-                        id: coverMask
-                        anchors.fill: cover
-                        radius: coverSlot.side * 0.08
-                        layer.enabled: true
-                        visible: false
+
+                    Column {
+                        id: trackWords
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: face.metaSize * 0.2
+                        // As wide as the words, and no wider than the room the
+                        // cover leaves, so the pair centres and long ones elide.
+                        width: Math.min(Math.ceil(Math.max(title.implicitWidth, byline.implicitWidth)),
+                                        trackRow.parent.width
+                                        - (coverSlot.visible ? coverSlot.side + trackRow.spacing : 0))
+
+                        Words {
+                            id: title
+                            width: parent.width
+                            text: face.applet.title
+                            font.pixelSize: face.metaSize * 1.3
+                            font.weight: Font.DemiBold
+                        }
+                        Words {
+                            id: byline
+                            width: parent.width
+                            visible: text.length > 0
+                            text: [face.applet.artist, face.applet.album]
+                                .filter(function (s) { return s.length > 0; })
+                                .join("  ·  ").toUpperCase()
+                            font.pixelSize: face.metaSize
+                            font.letterSpacing: face.metaSize * 0.12
+                            opacity: 0.8
+                        }
                     }
                 }
-
-                ColumnLayout {
-                    // As wide as the words, and no wider, so the pair centres.
-                    Layout.fillWidth: true
-                    Layout.maximumWidth: Math.max(title.implicitWidth, byline.implicitWidth)
-                    Layout.alignment: Qt.AlignVCenter
-                    spacing: face.metaSize * 0.2
-
-                    Words {
-                        id: title
-                        Layout.fillWidth: true
-                        text: face.applet.title
-                        font.pixelSize: face.metaSize * 1.3
-                        font.weight: Font.DemiBold
-                    }
-                    Words {
-                        id: byline
-                        Layout.fillWidth: true
-                        visible: text.length > 0
-                        text: [face.applet.artist, face.applet.album]
-                            .filter(function (s) { return s.length > 0; })
-                            .join("  ·  ").toUpperCase()
-                        font.pixelSize: face.metaSize
-                        font.letterSpacing: face.metaSize * 0.12
-                        opacity: 0.8
-                    }
-                }
-
-                Item { Layout.fillWidth: true }
             }
 
             // --- the words
