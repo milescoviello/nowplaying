@@ -12,7 +12,8 @@ import time
 import urllib.error
 import urllib.request
 
-from . import audio, config, enrich, fleet, lyrics as lyrics_mod, mpris, translit
+from . import (audio, config, enrich, fleet, lyrics as lyrics_mod, mpris, translit,
+               visualizer)
 from .recognizer import Match, Recognizer
 from .state import State
 
@@ -50,6 +51,9 @@ class Daemon:
         # What the saved-source file looked like when last read; a change is
         # a new pick from the popup.
         self._source_stamp = _saved_stamp()
+        # The desktop widget's visualizer: listens only while it is watched.
+        self.feed = visualizer.Feed(on_change=self._on_feed)
+        self._feed_note: asyncio.Task | None = None
 
     # --- client plumbing -----------------------------------------------------
     async def _handle_client(self, reader: asyncio.StreamReader,
@@ -95,6 +99,10 @@ class Daemon:
                 await writer.drain()
             except (ConnectionResetError, BrokenPipeError, RuntimeError):
                 self.clients.discard(writer)
+
+    def _on_feed(self) -> None:
+        self.state.vis_listening = self.feed.listening
+        self._feed_note = asyncio.get_running_loop().create_task(self.broadcast())
 
     # --- state helpers -------------------------------------------------------
     def _set_status(self, status: str, message: str = "") -> None:
@@ -662,6 +670,8 @@ class Daemon:
         if self._follow is not None:
             with contextlib.suppress(ProcessLookupError):
                 self._follow.kill()
+        # Likewise the visualizer's parec, which would go on listening.
+        self.feed.close()
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
         os.kill(os.getpid(), signal.SIGTERM)
 
@@ -674,6 +684,7 @@ class Daemon:
         log.info("listening on %s", sock)
         asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, self._on_sigterm)
         await asyncio.get_running_loop().run_in_executor(None, self._prune_covers)
+        await self.feed.start()
         self._set_status("idle", "starting up")
         loop_task = asyncio.create_task(self.run_loop())
         heartbeat = asyncio.create_task(self._heartbeat())
@@ -690,6 +701,7 @@ class Daemon:
             if self._load_task is not None:
                 self._load_task.cancel()
             self._stop_stream()
+            self.feed.close()
             with contextlib.suppress(OSError):
                 sock.unlink()
             with contextlib.suppress(OSError):

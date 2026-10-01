@@ -89,6 +89,15 @@ def pid_path() -> Path:
     return _runtime_dir() / f"{APP}.pid"
 
 
+def vis_endpoint_path() -> Path:
+    """Where the daemon says how to reach the desktop visualizer's feed.
+
+    In the runtime directory, which only this user can read: the URL carries
+    the token that lets a request switch the capture on.
+    """
+    return _runtime_dir() / f"{APP}.vis"
+
+
 def cache_dir() -> Path:
     base = os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
     d = Path(base) / APP

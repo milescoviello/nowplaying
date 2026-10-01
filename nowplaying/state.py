@@ -41,6 +41,9 @@ class State:
     # for, so a switch that didn't take is visible as such.
     source_pref: str = ""
     source_label: str = ""
+    # Listening to the speaker output for the desktop widget's visualizer,
+    # whatever the source: UIs that spell out what is being captured say so.
+    vis_listening: bool = False
     message: str = ""
     confidence: str = ""          # "" | "anchored" | "estimated"
 
