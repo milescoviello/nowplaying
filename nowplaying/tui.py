@@ -34,11 +34,11 @@ from rich.style import Style, StyleType
 from rich.table import Table
 from rich.text import Text
 
-from . import client, config
+from . import client, config, spectrum
 from .state import State
 
 FPS = 15
-VIS_FPS = 60             # the bars need more frames than the words do
+VIS_FPS = spectrum.FPS   # the bars need more frames than the words do
 # The applet's default leadInMs: a line is taken as current this early, so it
 # is up by the time it is sung, and in step with the panel.
 LEAD_IN = 0.3
@@ -208,137 +208,11 @@ def _has_original(s: State) -> bool:
 
 
 # --- visualizer --------------------------------------------------------------
-VIS_RATE = 44100
-# Samples per look: 46 ms, short enough that a beat moves the bars rather
-# than being averaged away.
-VIS_WINDOW = 2048
 VIS_BLOCKS = " ▁▂▃▄▅▆▇█"
-# Each look is blended with the last this much, both ways, as a web audio
-# analyser does: enough to stop flicker, little enough to keep the bounce.
-VIS_SMOOTHING = 0.5
-# A full-scale sine reads 0 dB; the bars span this far below the loudest
-# band of late -- wide enough that a quiet band still stands mid-height
-# rather than dropping to the floor -- and a quieter peak than VIS_FLOOR is
-# treated as silence rather than turned up into a wall of noise.
-VIS_RANGE = 48.0
-VIS_FLOOR = -35.0
 VIS_BAR = 2              # columns per bar
 # Wide enough, and the visualizer stands beside the lyrics at their full
 # height instead of in a band under them.
 VIS_BESIDE = 90
-# The cap above each bar holds its peak this many frames, then falls, faster
-# the longer it falls.
-VIS_HOLD = 12
-
-
-class _Listener:
-    """The speaker output for the visualizer: parec on the default sink's
-    monitor, keeping the last VIS_WINDOW samples.
-
-    It is a capture like the fingerprinting one, so the desktop's recording
-    indicator is on while it runs, though nothing leaves this machine. Only
-    the v key starts it, and it is only kept open while a track plays.
-    """
-
-    def __init__(self) -> None:
-        self.proc: subprocess.Popen | None = None
-        self.buf = bytearray()
-        self.lock = threading.Lock()
-
-    def start(self) -> str:
-        """Start listening; why it couldn't, or "" when it did."""
-        from . import audio
-        source = audio.default_monitor()
-        if not source:
-            return "no speaker output to listen to"
-        try:
-            self.proc = subprocess.Popen(
-                ["parec", f"--device={source}", "--format=s16le", f"--rate={VIS_RATE}",
-                 "--channels=1", "--latency-msec=20"],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL)
-        except OSError:
-            return "the visualizer needs parec"
-        threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
-        return ""
-
-    def _read(self, proc: subprocess.Popen) -> None:
-        assert proc.stdout is not None
-        while chunk := proc.stdout.read1(4096):
-            with self.lock:
-                self.buf += chunk
-                del self.buf[:-VIS_WINDOW * 2]
-
-    def started(self) -> bool:
-        return self.proc is not None
-
-    def died(self) -> bool:
-        return self.proc is not None and self.proc.poll() is not None
-
-    def stop(self) -> None:
-        if self.proc is None:
-            return
-        self.proc.terminate()
-        try:
-            self.proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-        self.proc = None
-        with self.lock:
-            self.buf.clear()
-
-    def latest(self) -> bytes | None:
-        with self.lock:
-            return bytes(self.buf) if len(self.buf) >= VIS_WINDOW * 2 else None
-
-
-class _Spectrum:
-    """Bar heights from the latest samples: log-spaced bands from the bass to
-    the treble, levelled against the loudest of late so any volume fills the
-    space, with a cap above each bar that holds its peak and then drops."""
-
-    def __init__(self) -> None:
-        import numpy
-        self.np = numpy
-        self.window = numpy.blackman(VIS_WINDOW)
-        self.freqs = numpy.fft.rfftfreq(VIS_WINDOW, 1 / VIS_RATE)
-        self.smooth = numpy.zeros(len(self.freqs))
-        self.peak = VIS_FLOOR
-        self.levels = numpy.zeros(0)
-        self.caps = numpy.zeros(0)
-        self.held = numpy.zeros(0)       # frames each cap has left to hold
-        self.falling = numpy.zeros(0)    # each cap's current fall speed
-
-    def __call__(self, raw: bytes, bars: int):
-        np = self.np
-        x = np.frombuffer(raw, dtype="<i2")[-VIS_WINDOW:] / 32768
-        # Scaled so a full-scale sine comes out at 1, i.e. 0 dB.
-        spectrum = np.abs(np.fft.rfft(x * self.window)) / (VIS_WINDOW * 0.42 / 2)
-        self.smooth = VIS_SMOOTHING * self.smooth + (1 - VIS_SMOOTHING) * spectrum
-        edges = np.geomspace(40, 16000, bars + 1)
-        centres = np.sqrt(edges[:-1] * edges[1:])
-        # The bass bands are narrower than the FFT's bins, so read them off
-        # the curve between bins; wider bands take their loudest bin.
-        band = np.interp(centres, self.freqs, self.smooth)
-        bins = np.searchsorted(self.freqs, edges)
-        for i, (a, b) in enumerate(zip(bins[:-1], bins[1:])):
-            if b > a:
-                band[i] = max(band[i], self.smooth[a:b].max())
-        db = 20 * np.log10(band + 1e-9)
-        # Music thins out towards the treble; tilt it back up 3 dB an octave.
-        db += 3 * np.log2(centres / 1000)
-        self.peak = max(VIS_FLOOR, db.max(), self.peak - 0.08)
-        level = np.clip((db - (self.peak - VIS_RANGE)) / VIS_RANGE, 0, 1)
-        if len(self.levels) != bars:
-            self.caps, self.held, self.falling = level.copy(), np.zeros(bars), np.zeros(bars)
-        self.levels = level
-        # A bar that reaches its cap pushes it up and restarts the hold.
-        pushed = level >= self.caps
-        self.caps = np.where(pushed, level, self.caps)
-        self.held = np.where(pushed, VIS_HOLD, self.held - 1)
-        self.falling = np.where(self.held > 0, 0, self.falling + 0.004)
-        self.caps = np.maximum(level, self.caps - self.falling)
-        return self.levels, self.caps
 
 
 def _cost(pref: str) -> str:
@@ -465,8 +339,8 @@ class TUI:
         self.accent = PLAIN
         # Off until asked for: it listens, and lights the recording indicator.
         self.visualizer = False
-        self.listener = _Listener()
-        self.spectrum: _Spectrum | None = None
+        self.listener = spectrum.Listener()
+        self.spectrum: spectrum.Spectrum | None = None
         self.frame_at = 0.0      # when the next frame is due
 
     def _reader(self) -> None:
@@ -877,7 +751,7 @@ class TUI:
     def _toggle_visualizer(self) -> None:
         if not self.visualizer and self.spectrum is None:
             try:
-                self.spectrum = _Spectrum()
+                self.spectrum = spectrum.Spectrum()
             except ImportError:
                 self._say("the visualizer needs numpy")
                 return
