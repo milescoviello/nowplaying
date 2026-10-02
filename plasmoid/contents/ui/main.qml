@@ -163,7 +163,10 @@ PlasmoidItem {
         } catch (e) {
             return;
         }
-        var newKey = (d.key || "") + "|" + (d.lyrics ? d.lyrics.length : 0);
+        // The lines themselves, not just how many: lyrics synced again keep
+        // their length but not their timings.
+        var newKey = (d.key || "") + "|" + JSON.stringify(d.lyrics || [])
+            + JSON.stringify(d.lyrics_original || []);
         status = d.status || "idle";
         artist = d.artist || "";
         title = d.title || "";
