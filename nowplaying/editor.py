@@ -88,7 +88,9 @@ def edit(s: State) -> str:
     back. Returns what happened, in a few words."""
     path = target(s)
     try:
-        before = path.read_text(encoding="utf-8-sig")
+        # Replaced, as the daemon reads it: a file from another player can be
+        # in some other encoding, and the stray bytes show up to be fixed.
+        before = path.read_text(encoding="utf-8-sig", errors="replace")
     except FileNotFoundError:
         before = sheet(s)
     except OSError as exc:
@@ -102,7 +104,7 @@ def edit(s: State) -> str:
             f.write(before)
         if _run([*command, name]) != 0:
             raise LyricsError("the editor quit with an error; nothing saved")
-        after = Path(name).read_text(encoding="utf-8-sig")
+        after = Path(name).read_text(encoding="utf-8-sig", errors="replace")
     except OSError as exc:
         raise LyricsError(f"couldn't edit the lyrics: {exc.strerror}") from None
     finally:
