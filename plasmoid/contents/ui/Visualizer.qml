@@ -1,8 +1,9 @@
 pragma ComponentBehavior: Bound
 
 /*
- * Bars for whatever the speaker is playing, with a cap above each that holds
- * its peak and then drops -- the TUI's visualizer, for the desktop.
+ * Bars for whatever the speaker is playing, with a cap above each that the
+ * bar throws up and gravity brings back -- the TUI's visualizer, for the
+ * desktop.
  *
  * QML can't capture audio, so the daemon listens on our behalf and streams
  * the bars' heights over localhost (nowplaying/visualizer.py): one line a

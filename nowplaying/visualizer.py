@@ -32,10 +32,6 @@ STREAM_SECONDS = 2.0
 # reconnects without restarting parec each time.
 LINGER_SECONDS = 3.0
 MIN_BARS, MAX_BARS = 4, 192
-# On the desktop the caps bounce: thrown up by the bar that hits them, at up
-# to this much a frame, where the TUI's hold and drop. Enough for an arc a
-# good way above the bar, not enough to fling a quiet one to the top.
-CAP_KICK = 0.04
 # A bar's height as one printable character, 0 to LEVELS - 1 above "0".
 LEVELS = 64
 
@@ -158,7 +154,7 @@ class Feed:
                     continue
                 spec = self.spectra.get(bars)
                 if spec is None:
-                    spec = self.spectra[bars] = spectrum.Spectrum(kick=CAP_KICK)
+                    spec = self.spectra[bars] = spectrum.Spectrum()
                 self.frames[bars] = _encode(*spec(raw, bars))
             self._frame.set()
             self._frame = asyncio.Event()
