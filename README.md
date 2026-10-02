@@ -203,6 +203,9 @@ next one to tap, and the timings so far play along as you go.
   that's out by the same amount all the way through just needs `-` or `+`.
 * A plain sheet starts from the top. The blank between two stanzas is a line
   too: tap it where the singing stops for a break, or leave it.
+* A tap that puts other lines out of order, before it with later times or
+  after it with earlier ones, takes their times away to be tapped again;
+  backspace brings them back.
 * Tap as the line starts rather than once you've read it. If your taps came
   consistently late, `-` takes every line a tenth of a second earlier.
 * `w` saves once every line with words has a time. The panel, the desktop
