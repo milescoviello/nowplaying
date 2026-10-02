@@ -37,6 +37,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="print the current state as JSON and exit")
 
+    ly = sub.add_parser("lyrics", help="lyrics of your own for the track playing")
+    lsub = ly.add_subparsers(dest="lyrics_command", required=True)
+    lsub.add_parser("edit", help="write them, or fix the ones showing, in $EDITOR")
+    imp = lsub.add_parser("import", help="use a .lrc or plain text file")
+    imp.add_argument("file")
+    imp.add_argument("--force", action="store_true",
+                     help="replace lyrics of your own already saved")
+    lsub.add_parser("path", help="print the file they're kept in")
+
     sub.add_parser("sources", help="list available audio sources")
     sub.add_parser("stop", help="stop a running daemon")
     return p
@@ -84,6 +93,33 @@ def cmd_status() -> int:
     data["lyrics_plain_original"] = f"<{len(state.lyrics_plain_original)} chars>"
     data["position"] = round(state.position(), 2)
     print(json.dumps(data, indent=2))
+    return 0
+
+
+def cmd_lyrics(args: argparse.Namespace) -> int:
+    """Lyrics of your own for whatever the daemon says is playing. Never
+    starts a daemon, for the reason cmd_status gives."""
+    from pathlib import Path
+    from . import client, editor
+    try:
+        state = client.get_once(autostart=False)
+    except OSError:
+        print("daemon not running (start it with: nowplaying daemon --source mpris)",
+              file=sys.stderr)
+        return 1
+    if state is None:
+        print("no state received", file=sys.stderr)
+        return 1
+    try:
+        if args.lyrics_command == "path":
+            print(editor.target(state))
+        elif args.lyrics_command == "edit":
+            print(editor.edit(state))
+        else:
+            print(editor.import_file(state, Path(args.file), args.force))
+    except editor.LyricsError as exc:
+        print(exc, file=sys.stderr)
+        return 1
     return 0
 
 
@@ -139,6 +175,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_stop()
     if command == "status":
         return cmd_status()
+    if command == "lyrics":
+        return cmd_lyrics(args)
     if command == "daemon":
         from . import daemon
         return daemon.main(source=args.source, verbose=args.verbose)
