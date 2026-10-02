@@ -228,10 +228,12 @@ def _own_files() -> dict[str, Path]:
         st = folder.stat()
         stamp = (st.st_mtime_ns, st.st_ino)
         if stamp != _own_index[0]:
-            files = [f for f in folder.iterdir() if not f.name.startswith(".")
+            files = [(f.suffix.lower() == ".lrc", f.stat().st_mtime_ns, f)
+                     for f in folder.iterdir() if not f.name.startswith(".")
                      and f.suffix.lower() in OWN_SUFFIXES]
-            files.sort(key=lambda f: f.suffix.lower() == ".lrc")   # .lrc over .txt
-            _own_index = (stamp, {_loose(f.stem): f for f in files})
+            # Last in wins: a .lrc over a .txt, and the newest of the rest.
+            files.sort(key=lambda entry: entry[:2])
+            _own_index = (stamp, {_loose(f.stem): f for _, _, f in files})
     except OSError:
         _own_index = (None, {})
     return _own_index[1]
