@@ -41,6 +41,11 @@ class Daemon:
         self._resume_check = False
         # Artwork + lyrics for the current MPRIS track, fetched off the loop.
         self._load_task: asyncio.Task | None = None
+        # The current track's lyrics lookup, and its own file's stamp when the
+        # lyrics were loaded: a different stamp is a file added, edited or
+        # removed, and the lyrics are loaded again.
+        self._own_watch: tuple[Match, tuple] | None = None
+        self._lyrics_task: asyncio.Task | None = None
         # Set the moment a player announces a change, so a skip doesn't wait
         # out the rest of a poll interval.
         self._wake = asyncio.Event()
@@ -125,6 +130,9 @@ class Daemon:
         s.anchor_pos = 0.0
         s.confidence = ""
         self._pending_resync = None
+        self._own_watch = None
+        if self._lyrics_task is not None:
+            self._lyrics_task.cancel()
         self._set_status(status, message)
 
     def _anchor(self, position: float, wall: float) -> None:
@@ -189,16 +197,18 @@ class Daemon:
 
         def fetch():
             # Lyrics of your own win, and need no lookup at all.
-            own = lyrics_mod.own_file(match.artist, match.title)
-            found = lyrics_mod.load_own(own) or \
+            # Stamped before it's read, so an edit made meanwhile is caught.
+            stamp = lyrics_mod.own_stamp(match.artist, match.title)
+            found = lyrics_mod.load_own(stamp[0]) or \
                 lyrics_mod.fetch(match.artist, match.title, match.album, duration)
-            return found, translit.lyrics(found.lines, found.plain), own
+            return found, translit.lyrics(found.lines, found.plain), stamp
 
         loop = asyncio.get_running_loop()
-        result, latin, own = await loop.run_in_executor(None, fetch)
+        result, latin, stamp = await loop.run_in_executor(None, fetch)
         s = self.state
         if s.key != key:
             return
+        self._own_watch = (match, stamp)
         s.lyrics = result.lines
         s.lyrics_original = []
         s.lyrics_synced = result.synced
@@ -211,7 +221,7 @@ class Daemon:
             s.lyrics_plain_original = result.plain
             s.lyrics, s.lyrics_plain = latin
         s.lyrics_source = result.source
-        s.lyrics_file = str(own)
+        s.lyrics_file = str(stamp[0])
         # LRCLIB knows the track length; Shazam does not. Use it for the
         # progress readout and for noticing when the track has run out.
         if result.duration:
@@ -224,6 +234,28 @@ class Daemon:
             s.message = "unsynced lyrics only"
         else:
             s.message = ""
+
+    def _check_own_lyrics(self) -> None:
+        """Load the lyrics again once the track's own file has changed -- a
+        sync saved from the TUI, an edit, a file dropped in by hand -- so it
+        shows within a tick, without a restart or a skip."""
+        watch = self._own_watch
+        if watch is None or watch[0].key != self.state.key:
+            return
+        if self._lyrics_task is not None and not self._lyrics_task.done():
+            return   # already on it
+        match, stamp = watch
+        if lyrics_mod.own_stamp(match.artist, match.title) == stamp:
+            return
+        log.info("own lyrics changed for %s - %s", match.artist or "?", match.title)
+        self._lyrics_task = asyncio.create_task(self._reload_lyrics(match))
+
+    async def _reload_lyrics(self, match: Match) -> None:
+        try:
+            await self._load_lyrics(match)
+            await self.broadcast()
+        except Exception:
+            log.exception("reloading lyrics failed")
 
     # --- recognition ---------------------------------------------------------
     def _ensure_stream(self) -> audio.StreamCapture | None:
@@ -570,6 +602,7 @@ class Daemon:
 
     async def _tick(self) -> None:
         self._check_saved_source()
+        self._check_own_lyrics()
         # Prefer a player's own metadata: costs no capture, so nothing trips
         # the desktop's recording indicator, and the position is exact.
         if self.source_pref in ("mpris", "auto"):
@@ -708,6 +741,8 @@ class Daemon:
             watcher.cancel()
             if self._load_task is not None:
                 self._load_task.cancel()
+            if self._lyrics_task is not None:
+                self._lyrics_task.cancel()
             self._stop_stream()
             self.feed.close()
             with contextlib.suppress(OSError):

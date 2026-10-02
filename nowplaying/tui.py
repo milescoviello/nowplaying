@@ -408,7 +408,9 @@ class TUI:
         # Same timings either way, so the current line holds.
         original = self.original and _has_original(s)
         lines = s.lyrics_original if original else s.lyrics
-        made = (s.key, len(lines), original, width)
+        # The lines themselves, not just how many: lyrics synced or edited
+        # again keep their length.
+        made = (lines, original, width)
         if self.wrapped[0] != made:
             rows, starts = _wrap(console, [Text(text or "♪") for _, text in lines], width)
             # A blank row either end; the sentinel is where the last line ends.
