@@ -24,6 +24,10 @@ homelab readout over the lyrics until you middle-click again.
 Put it on the desktop instead and it lays the lyrics straight across the
 wallpaper ([On the desktop](#on-the-desktop)).
 
+Where the lyrics it finds are wrong, out of time or missing, write your own
+and tap them into time with the track; they're kept, and used from then on
+([Your own lyrics](#your-own-lyrics)).
+
 ## How it works
 
 A daemon works out what's playing and writes a small JSON state file. The panel
@@ -62,7 +66,8 @@ auth) to fill in album and artwork.
 **Lyrics come from [LRCLIB](https://lrclib.net)** — free, no key, no account.
 Matching uses artist + title + album + duration, since duration is what stops you
 getting the radio edit's timings on the album cut. Results are cached to disk, so
-a repeat play is instant and works offline.
+a repeat play is instant and works offline. A file of your own for the track
+beats all of it ([Your own lyrics](#your-own-lyrics)).
 
 ### Choosing the source
 
@@ -154,6 +159,70 @@ reach localhost too, and shouldn't be able to switch the capture on. Within a
 few seconds of the widget hanging up, because the visualizer is off, the music
 paused or the widget gone, the daemon stops listening.
 
+## Your own lyrics
+
+When LRCLIB has a track's lyrics wrong, out of time or not at all, give it your
+own. They're kept one file per track in `~/.local/share/nowplaying/lyrics/`,
+and a track with a file there never asks LRCLIB:
+
+```
+~/.local/share/nowplaying/lyrics/
+  Some Artist - Some Song.lrc      ← synced: a [mm:ss.xx] before each line
+  Other Artist - Other Song.txt    ← plain text, no timings
+```
+
+* A file is found by its name, loosely: case, punctuation and spacing don't
+  count, so `some artist - some song!.lrc` matches too, and files kept by
+  another player work as they are. With both, the `.lrc` wins.
+* Timings make it synced and none make it a plain sheet; a file with no lyrics
+  in it at all says the track is instrumental. An LRC's `[offset:]` is honoured.
+* The daemon notices a file added, changed or removed within a second or so:
+  no restart, no skipping away and back. Remove it to go back to LRCLIB.
+
+The name is the artist and title as the daemon has them, after Plex or iTunes
+has filled them in, so the surest way to get it right is to let nowplaying make
+the file:
+
+| | |
+|---|---|
+| `nowplaying lyrics edit` | the playing track's lyrics in `$EDITOR`: its own file, or else the lyrics showing now, timings and all, so a wrong word is fixed without syncing anything |
+| `nowplaying lyrics import FILE` | a `.lrc` or plain text file as the track's lyrics (`--force` replaces ones already saved) |
+| `nowplaying lyrics path` | where the track's lyrics are kept, or would be |
+
+In the TUI, `e` does what `nowplaying lyrics edit` does. Either way the lyrics
+are saved as written: for lyrics shown in Latin letters, in their own script.
+
+### Syncing them to the track
+
+`s` in the TUI syncs the lyrics showing to the track as it plays: tap enter as
+each line starts. Each line is listed after its timing, with a marker on the
+next one to tap, and the timings so far play along as you go.
+
+* Lyrics already synced keep their timings, and the marker starts on the next
+  line to be sung, so only the stretch that's off needs tapping again. A sheet
+  that's out by the same amount all the way through just needs `-` or `+`.
+* A plain sheet starts from the top. The blank between two stanzas is a line
+  too: tap it where the singing stops for a break, or leave it.
+* Tap as the line starts rather than once you've read it. If your taps came
+  consistently late, `-` takes every line a tenth of a second earlier.
+* `w` saves once every line with words has a time. The panel, the desktop
+  widget and the TUI follow the new timings from then on, every play.
+
+| Key while syncing | |
+|---|---|
+| `enter` | the marked line starts now |
+| `backspace` | take the last tap back |
+| `↑` `↓` `j` `k` | move the marker |
+| `←` `→` | the track back or on 5 s, to tap a stretch again |
+| `0` | the track back to the start |
+| `-` `+` | every line a tenth of a second earlier or later |
+| `w` | save |
+| `esc` | leave without saving; twice, with taps unsaved |
+
+The timings are read off the same clock the lyrics are shown by. Seeking needs
+a local player, as the other controls do, and after a seek a tap waits until
+the daemon has seen it land rather than stamping where the track was.
+
 ## Install
 
 Requires **Python 3.13** (see Notes), KDE Plasma 6, `playerctl`, and
@@ -230,6 +299,7 @@ the widget just says so and carries on.
 | `nowplaying status` | current state as JSON |
 | `nowplaying sources` | list audio sources |
 | `nowplaying tui` | the popup in a terminal (also plain `nowplaying`) |
+| `nowplaying lyrics edit` / `import FILE` / `path` | lyrics of your own for the playing track ([Your own lyrics](#your-own-lyrics)) |
 | `nowplaying overlay` | floating desktop HUD |
 | `nowplaying stop` | stop the daemon |
 
@@ -249,6 +319,8 @@ being replaced by an `auto` one that listens.
 | `o` | original script or Latin letters, for transliterated lyrics |
 | `h` | pin the homelab readout over the lyrics, like the panel's middle-click |
 | `v` | a spectrum visualizer, beside the lyrics in a wide terminal; it listens to the speaker output, so the recording indicator is on while it shows (nothing leaves the machine) |
+| `e` | write the lyrics, or fix them, in `$EDITOR` ([Your own lyrics](#your-own-lyrics)) |
+| `s` | sync the lyrics to the track, a tap a line ([Syncing them to the track](#syncing-them-to-the-track)) |
 | `↑` `↓` `j` `k` `PgUp` `PgDn` `Home` `End` | scroll the sheet; it goes back to following the music 4 s later |
 | `?` | list the keys and what each source does |
 | `q` | quit |
@@ -312,6 +384,9 @@ can other displays. Treat these keys as stable:
 | `lyrics_original` | same timings in the original script when transliterated, else `[]` |
 | `lyrics_synced` | false = plain text only, no timings |
 | `lyrics_plain` | the whole text without timings, in Latin letters when transliterated |
+| `lyrics_plain_original` | the same in the original script when transliterated, else empty |
+| `lyrics_source` | `lrclib` or `own` (a file of your own), either with `-instrumental`; empty when none were found |
+| `lyrics_file` | where the track's own lyrics are kept, or would be: where a UI that writes them saves; empty until the lyrics are looked up |
 | `cover_file` | local path to artwork, or empty |
 | `idle_active` `idle_kind` `idle_line1` `idle_line2` `idle_ok` | idle display |
 | `vis_listening` | the daemon is listening to the speaker output for the desktop visualizer |
@@ -333,7 +408,8 @@ bin/nowplaying        launcher (uses .venv)
 nowplaying/
   mpris.py            playerctl source + title cleanup
   enrich.py           Plex / iTunes metadata and artwork
-  lyrics.py           LRCLIB client, LRC parser, disk cache
+  lyrics.py           LRCLIB client, LRC parser, disk cache, your own files
+  editor.py           your own lyrics: in $EDITOR, and the TUI's sync
   translit.py         other scripts in Latin letters (optional)
   fleet.py            Uptime Kuma health via ssh + sqlite
   daemon.py           detection loop, state file, unix socket
@@ -346,4 +422,5 @@ nowplaying/
 plasmoid/             the Plasma 6 applet (QML)
 ```
 
-Lyrics from [LRCLIB](https://lrclib.net). Cache in `~/.cache/nowplaying/`.
+Lyrics from [LRCLIB](https://lrclib.net). Cache in `~/.cache/nowplaying/`; your
+own lyrics in `~/.local/share/nowplaying/lyrics/`.
