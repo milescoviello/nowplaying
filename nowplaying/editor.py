@@ -64,7 +64,10 @@ def sheet(s: State) -> str:
 def _editor() -> list[str]:
     for var in ("VISUAL", "EDITOR"):
         if os.environ.get(var, "").strip():
-            return shlex.split(os.environ[var])
+            try:
+                return shlex.split(os.environ[var])
+            except ValueError as exc:   # an unmatched quote
+                raise LyricsError(f"can't read ${var}: {exc}") from None
     for name in ("nano", "vi"):
         if shutil.which(name):
             return [name]
@@ -98,7 +101,10 @@ def edit(s: State) -> str:
     command = _editor()
     # Edited out of the way, and only saved whole, so the daemon never picks
     # up half an edit -- or one abandoned.
-    fd, name = tempfile.mkstemp(prefix="nowplaying-", suffix=".lrc")
+    try:
+        fd, name = tempfile.mkstemp(prefix="nowplaying-", suffix=".lrc")
+    except OSError as exc:
+        raise LyricsError(f"couldn't make a file to edit: {exc.strerror}") from None
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(before)
