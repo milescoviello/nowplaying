@@ -249,6 +249,8 @@ class Draft:
         left = self.untimed()
         if left:
             raise LyricsError(f"{left} line{'s'[:left != 1]} still to tap")
-        said = _save(self.path, self.lrc())
+        # Beside a plain .txt rather than over it: the .lrc wins, and the
+        # plain sheet it was synced from stays as it was.
+        said = _save(self.path.with_suffix(".lrc"), self.lrc())
         self.changed = False
         return said
