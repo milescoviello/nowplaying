@@ -117,6 +117,14 @@ def covers_dir() -> Path:
     return d
 
 
+def own_lyrics_dir() -> Path:
+    """Lyrics written or synced by hand, one file per track, which win over
+    LRCLIB. Data rather than cache: unlike a cached lookup, they can't be
+    fetched again."""
+    base = os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")
+    return Path(base) / APP / "lyrics"
+
+
 def config_dir() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
     return Path(base) / APP

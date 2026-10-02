@@ -34,7 +34,12 @@ class State:
     lyrics_original: list[tuple[float, str]] = field(default_factory=list)
     lyrics_synced: bool = False
     lyrics_plain: str = ""
-    lyrics_source: str = ""
+    # The plain text in the original script, when `lyrics_plain` is transliterated.
+    lyrics_plain_original: str = ""
+    lyrics_source: str = ""   # lrclib | own, or either + "-instrumental"; "" = none
+    # Where this track's own lyrics are kept, or would be: what a UI that
+    # writes or syncs them saves to. Empty until the lyrics are looked up.
+    lyrics_file: str = ""
 
     # What the daemon is set to listen with: mpris | auto | loopback | mic, or
     # a device name from --source. UIs show this, never what they last asked

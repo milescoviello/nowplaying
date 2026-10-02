@@ -115,8 +115,10 @@ class Daemon:
         s.lyrics = []
         s.lyrics_original = []
         s.lyrics_plain = ""
+        s.lyrics_plain_original = ""
         s.lyrics_synced = False
         s.lyrics_source = ""
+        s.lyrics_file = ""
         s.duration = 0.0
         s.player = ""
         s.playing = False
@@ -186,11 +188,14 @@ class Daemon:
         duration = self.state.duration or None
 
         def fetch():
-            found = lyrics_mod.fetch(match.artist, match.title, match.album, duration)
-            return found, translit.lyrics(found.lines, found.plain)
+            # Lyrics of your own win, and need no lookup at all.
+            own = lyrics_mod.own_file(match.artist, match.title)
+            found = lyrics_mod.load_own(own) or \
+                lyrics_mod.fetch(match.artist, match.title, match.album, duration)
+            return found, translit.lyrics(found.lines, found.plain), own
 
         loop = asyncio.get_running_loop()
-        result, latin = await loop.run_in_executor(None, fetch)
+        result, latin, own = await loop.run_in_executor(None, fetch)
         s = self.state
         if s.key != key:
             return
@@ -198,17 +203,20 @@ class Daemon:
         s.lyrics_original = []
         s.lyrics_synced = result.synced
         s.lyrics_plain = result.plain
+        s.lyrics_plain_original = ""
         if latin is not None:
             # Not in Latin letters: publish them spelled out where every UI
             # already looks, and keep the original script alongside.
             s.lyrics_original = result.lines
+            s.lyrics_plain_original = result.plain
             s.lyrics, s.lyrics_plain = latin
         s.lyrics_source = result.source
+        s.lyrics_file = str(own)
         # LRCLIB knows the track length; Shazam does not. Use it for the
         # progress readout and for noticing when the track has run out.
         if result.duration:
             s.duration = result.duration
-        if result.source == "lrclib-instrumental":
+        if result.source.endswith("-instrumental"):
             s.message = "instrumental"
         elif not result.available:
             s.message = "no lyrics found on LRCLIB"
