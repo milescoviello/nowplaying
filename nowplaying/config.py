@@ -47,6 +47,14 @@ PAUSE_IDLE_SECONDS = 15.0
 # would keep yanking the local clock back to a stale reading, so only re-anchor
 # when a genuinely new reading disagrees with the running clock by this much.
 POSITION_RESYNC_TOLERANCE = 2.5
+# A local player's first reading after a seek, a resume or a new track can be
+# stale -- VLC repeats where it landed for its second or so of caching, then
+# carries on from where it really is -- and a stale anchor less than the
+# tolerance out would never be corrected. So for this long after re-anchoring,
+# a new reading out by more than SETTLE_TOLERANCE is believed too. Not for a
+# checkpointing source, whose readings are of unknown age.
+SETTLE_SECONDS = 4.0
+SETTLE_TOLERANCE = 0.1
 
 IDLE_POLL = 3.0          # seconds between silence probes when nothing is playing
 SEARCH_INTERVAL = 2.0    # gap between recognition attempts while searching
