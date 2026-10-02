@@ -212,8 +212,10 @@ _own_index: tuple[tuple[int, int] | None, dict[str, Path]] = (None, {})
 
 
 def _loose(name: str) -> str:
-    """What a file name is matched on: its words, in lower case."""
-    return " ".join(re.findall(r"\w+", unicodedata.normalize("NFKC", name).casefold()))
+    """What a file name is matched on: its words, in lower case. Underscores
+    count as spaces, and apostrophes as nothing, so "Don't" is "Dont"."""
+    name = unicodedata.normalize("NFKC", name).casefold().replace("'", "").replace("’", "")
+    return " ".join(re.findall(r"[^\W_]+", name))
 
 
 def _own_name(artist: str, title: str) -> str:
