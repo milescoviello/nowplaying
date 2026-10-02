@@ -171,8 +171,10 @@ class Draft:
     shown: list[str]        # as read: in Latin letters, if transliterated
     times: list[float | None]
     cursor: int = 0
-    # Each tap's line and the time it had before, so taps can be taken back.
-    taps: list[tuple[int, float | None]] = field(default_factory=list)
+    # Each tap's line, the time it had before, and the lines it took the
+    # times from with theirs, so taps can be taken back.
+    taps: list[tuple[int, float | None, list[tuple[int, float]]]] = \
+        field(default_factory=list)
     shifted: float = 0.0    # how far every line has been moved, all told
     changed: bool = False
 
@@ -200,22 +202,33 @@ class Draft:
         return cls(key=s.key, path=path, tags=tags(s), texts=texts, shown=shown,
                    times=times, cursor=cursor)
 
-    def tap(self, pos: float) -> None:
-        """The cursor's line starts now."""
-        if self.cursor >= len(self.times):
-            return
-        self.taps.append((self.cursor, self.times[self.cursor]))
-        self.times[self.cursor] = pos
+    def tap(self, pos: float) -> int:
+        """The cursor's line starts now. Lines that leaves out of order --
+        the rest of a stretch being tapped again, or a tap on the wrong
+        line -- lose their times, to be tapped again rather than quietly
+        squashed together. Returns how many did."""
+        line = self.cursor
+        if line >= len(self.times):
+            return 0
+        clash = [(i, t) for i, t in enumerate(self.times) if t is not None
+                 and (i < line and t > pos or i > line and t < pos)]
+        self.taps.append((line, self.times[line], clash))
+        for i, _ in clash:
+            self.times[i] = None
+        self.times[line] = pos
         self.cursor += 1
         self.changed = True
+        return len(clash)
 
     def untap(self) -> None:
         """Take the last tap back, and the cursor to its line to tap again."""
         if not self.taps:
             self.move(-1)
             return
-        line, before = self.taps.pop()
+        line, before, clash = self.taps.pop()
         self.times[line] = before
+        for i, t in clash:
+            self.times[i] = t
         self.cursor = line
 
     def move(self, step: int) -> None:
@@ -226,7 +239,8 @@ class Draft:
         def moved(t: float | None) -> float | None:
             return None if t is None else max(0.0, t + seconds)
         self.times = [moved(t) for t in self.times]
-        self.taps = [(line, moved(before)) for line, before in self.taps]
+        self.taps = [(line, moved(before), [(i, moved(t)) for i, t in clash])
+                     for line, before, clash in self.taps]
         self.shifted = round(self.shifted + seconds, 3)
         self.changed = True
 
@@ -248,7 +262,7 @@ class Draft:
         for t, text in zip(self.times, self.texts):
             if t is None:
                 continue
-            # A line retimed past the next keeps its place in the sheet.
+            # Taps keep them in order; this keeps the sheet's if not.
             last = max(last, t)
             lines.append((last, text))
         return lyrics_mod.format_lrc(lines, self.tags)

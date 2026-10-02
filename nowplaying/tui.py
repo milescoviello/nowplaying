@@ -1008,7 +1008,10 @@ class TUI:
         if not self._settled(s):
             self._say("waiting for the player to get there")
             return
-        self.draft.tap(s.position())
+        clash = self.draft.tap(s.position())
+        if clash:
+            self._say(f"{clash} line{'s'[:clash != 1]} out of order with that: "
+                      "tap again, or backspace")
 
     def _seek(self, step: float) -> None:
         """Move the track `step` seconds, to tap a stretch again. By so much
