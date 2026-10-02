@@ -99,7 +99,10 @@ SYNC_KEYS = (
 # Past the daemon's resync tolerance, so a seek is believed on its next poll.
 SEEK_STEP = 5.0
 SHIFT_STEP = 0.1
-# A seek not in the daemon's position by then never will be; taps go ahead.
+# A seek has landed once the daemon's position is this close to where it
+# should be: a player's first reading after one can be stale, and the daemon
+# only settles on the next. Not by then, and it never will be; taps go ahead.
+SEEK_TOLERANCE = 0.3
 SEEK_SECONDS = 3.0
 # The marker, a line's timing and a gap, before each line while syncing.
 GUTTER = 11
@@ -1026,13 +1029,13 @@ class TUI:
             self.seeking = (where, time.monotonic())
 
     def _settled(self, s: State) -> bool:
-        """The daemon's position has caught up with the last seek: the player
-        reports a seek on its next poll, up to a second later."""
+        """The daemon's position has caught up with the last seek, which
+        takes it a poll or two."""
         if self.seeking is None:
             return True
         where, since = self.seeking
         elapsed = time.monotonic() - since
-        if abs(s.position() - (where + (elapsed if s.playing else 0.0))) < 1.0 \
+        if abs(s.position() - (where + (elapsed if s.playing else 0.0))) < SEEK_TOLERANCE \
                 or elapsed > SEEK_SECONDS:
             self.seeking = None
             return True

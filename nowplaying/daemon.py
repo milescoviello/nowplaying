@@ -52,6 +52,9 @@ class Daemon:
         # A checkpointing source's current reading is of unknown age; the
         # next one that moves is fresh, and is believed outright.
         self._await_report = False
+        # Until when a local player's readings re-anchor at the slightest
+        # disagreement, after a resync; see config.SETTLE_SECONDS.
+        self._settle_until = 0.0
         self._follow: asyncio.subprocess.Process | None = None
         # What the saved-source file looked like when last read; a change is
         # a new pick from the popup.
@@ -490,6 +493,7 @@ class Daemon:
         fresh = abs(now.position - self._last_src_pos) > 0.001
         self._last_src_pos = now.position
 
+        settling = False
         if not s.anchor_wall or was_playing != now.playing:
             resync = True                       # new track, or play/pause flipped
             # A checkpoint is up to one report interval old (~15 s for Plex
@@ -500,11 +504,17 @@ class Daemon:
             self._await_report = False
         elif fresh and abs(now.position - predicted) > config.POSITION_RESYNC_TOLERANCE:
             resync = True                       # a real seek, or genuine drift
+        elif fresh and not checkpointed and wall < self._settle_until and \
+                abs(now.position - predicted) > config.SETTLE_TOLERANCE:
+            resync = settling = True            # the last resync's reading was stale
         else:
             resync = False                      # let the local clock run on
 
         if resync:
             s.anchor_pos = now.position
+            # A settling reading doesn't open the window again, so it closes.
+            if not settling:
+                self._settle_until = wall + config.SETTLE_SECONDS
         else:
             s.anchor_pos = predicted
         s.anchor_wall = wall
@@ -635,7 +645,9 @@ class Daemon:
                 await self.broadcast()
                 # Waiting on a fresh report: catch it the moment it lands,
                 # since the anchor is only as exact as when we see it.
-                await self._nap(0.25 if self._await_report and self.state.playing else 1.0)
+                # Likewise while a local player's position settles.
+                quick = self._await_report or time.time() < self._settle_until
+                await self._nap(0.25 if quick and self.state.playing else 1.0)
                 return
             if self.source_pref == "mpris":
                 # No player: stay idle rather than opening the audio device.
