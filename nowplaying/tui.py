@@ -34,7 +34,7 @@ from rich.style import Style, StyleType
 from rich.table import Table
 from rich.text import Text
 
-from . import client, config, spectrum
+from . import client, config, editor, spectrum
 from .state import State
 
 FPS = 15
@@ -77,6 +77,7 @@ KEYS = (
     ("o", "original script / Latin letters"),
     ("h", "pin the homelab readout"),
     ("v", "visualizer (listens to the speaker output)"),
+    ("e", "write the lyrics, or fix them, in $EDITOR"),
     ("↑↓ j k", "scroll the lyrics"),
     ("PgUp PgDn", "a page at a time"),
     ("Home End", "to the top or bottom"),
@@ -126,6 +127,23 @@ def _keyboard() -> Iterator[int | None]:
         yield fd
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
+@contextlib.contextmanager
+def _cooked(fd: int | None) -> Iterator[None]:
+    """The terminal out of cbreak for a program run in the middle of the
+    view -- the editor -- and back into it after."""
+    if fd is None:
+        yield
+        return
+    mode = termios.tcgetattr(fd)
+    cooked = list(mode)
+    cooked[3] |= termios.ECHO | termios.ICANON   # what cbreak took away
+    termios.tcsetattr(fd, termios.TCSADRAIN, cooked)
+    try:
+        yield
+    finally:
+        termios.tcsetattr(fd, termios.TCSAFLUSH, mode)
 
 
 def _fmt(seconds: float) -> str:
@@ -336,6 +354,8 @@ class TUI:
         # (what it was wrapped from, rows, the row each line starts on).
         self.wrapped: tuple = ((), [], [])
         self.help = False
+        # The lyrics are to be opened in the editor before the next frame.
+        self.editing = False
         self.accent = PLAIN
         # Off until asked for: it listens, and lights the recording indicator.
         self.visualizer = False
@@ -697,6 +717,8 @@ class TUI:
             hints.append(("h", "homelab"))
         if view in ("synced", "plain", "message") and link == "up" and s.title:
             hints.append(("v", "hide visualizer" if self.visualizer else "visualizer"))
+            if s.lyrics_file:
+                hints.append(("e", "edit lyrics"))
         hints += [("?", "close" if self.help else "keys"), ("q", "quit")]
         # Styled piece by piece: the panel lays a subtitle's own style over
         # all of it, which would wash out the keys.
@@ -760,6 +782,37 @@ class TUI:
                 return
         self.visualizer = not self.visualizer
 
+    def _ask_edit(self) -> None:
+        """Open the lyrics in the editor, once this frame is done -- unless
+        there's nothing to open, which is said without leaving the view."""
+        with self.lock:
+            s, link = self.state, self._link()
+        if link != "up":
+            self._say("the daemon is not running")
+            return
+        try:
+            editor.target(s)
+        except editor.LyricsError as exc:
+            self._say(str(exc))
+            return
+        self.editing = True
+
+    def _edit(self, live: Live, fd: int | None) -> None:
+        """Hand the terminal to the editor, and take it back after. The
+        daemon notices a save on its next tick and sends the new lyrics."""
+        self.editing = False
+        with self.lock:
+            s = self.state
+        live.stop()
+        try:
+            with _cooked(fd):
+                said = editor.edit(s)
+        except editor.LyricsError as exc:
+            said = str(exc)
+        finally:
+            live.start()
+        self._say(said)
+
     def _toggle_original(self) -> None:
         with self.lock:
             s, link = self.state, self._link()
@@ -800,6 +853,8 @@ class TUI:
             self._toggle_visualizer()
         elif key == "o":
             self._toggle_original()
+        elif key == "e":
+            self._ask_edit()
         elif key in ("1", "2", "3", "4"):
             self._pick_source(SOURCES[int(key) - 1][0])
         elif key in ("up", "down", "pgup", "pgdn", "home", "end", "j", "k", "g", "G"):
@@ -841,6 +896,8 @@ class TUI:
             with _keyboard() as fd, Live(console=console, screen=True,
                                          auto_refresh=False) as live:
                 while not self.quit:
+                    if self.editing:
+                        self._edit(live, fd)
                     live.update(self.render(*console.size), refresh=True)
                     self._wait(fd)
         except KeyboardInterrupt:
