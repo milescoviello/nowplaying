@@ -26,13 +26,16 @@ TIMEOUT = 20
 # One round trip: counts by status, then the names of anything down.
 # Deliberately contains NO quote characters -- it travels through ssh, then
 # `pct exec`, then sqlite3, and every quote would need escaping at each layer.
-# Row kind 1 = a count row, 2 = a down-monitor name.
+# Row kind 1 = a count row, 2 = a down-monitor name. A monitor that others
+# sit under (a Kuma group) only repeats their status -- one dead service
+# would otherwise count twice, itself and its group -- so groups are left out.
 _SQL = (
     "with last as (select monitor_id, max(time) mt from heartbeat group by monitor_id), "
     "cur as (select m.name nm, h.status st from monitor m "
     "join last l on l.monitor_id=m.id "
     "join heartbeat h on h.monitor_id=m.id and h.time=l.mt "
-    "where m.active=1) "
+    "where m.active=1 "
+    "and m.id not in (select parent from monitor where parent is not null)) "
     "select 1, st, count(*) from cur group by st "
     "union all select 2, nm, 0 from cur where st=0;"
 )
