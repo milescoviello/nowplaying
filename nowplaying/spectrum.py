@@ -28,6 +28,8 @@ FLOOR = -35.0
 # The cap above each bar holds its peak this many frames, then falls, faster
 # the longer it falls.
 HOLD = 12
+# How much faster a falling cap gets each frame.
+GRAVITY = 0.004
 
 
 class Listener:
@@ -97,7 +99,11 @@ class Spectrum:
     the treble, levelled against the loudest of late so any volume fills the
     space, with a cap above each bar that holds its peak and then drops."""
 
-    def __init__(self) -> None:
+    def __init__(self, kick: float = 0.0) -> None:
+        """kick: 0 for caps that hold their peak and then drop. Above 0, a
+        bar that pushes its cap throws it upward with the bar's own speed, up
+        to this much a frame, and it arcs back down under the same gravity --
+        caps that bounce, rather than wait."""
         import numpy
         self.np = numpy
         self.window = numpy.blackman(WINDOW)
@@ -108,6 +114,8 @@ class Spectrum:
         self.caps = numpy.zeros(0)
         self.held = numpy.zeros(0)       # frames each cap has left to hold
         self.falling = numpy.zeros(0)    # each cap's current fall speed
+        self.kick = kick
+        self.lift = numpy.zeros(0)       # each thrown cap's upward speed
 
     def __call__(self, raw: bytes, bars: int):
         np = self.np
@@ -131,11 +139,26 @@ class Spectrum:
         level = np.clip((db - (self.peak - RANGE)) / RANGE, 0, 1)
         if len(self.levels) != bars:
             self.caps, self.held, self.falling = level.copy(), np.zeros(bars), np.zeros(bars)
-        self.levels = level
+            self.lift, self.levels = np.zeros(bars), level
+        before, self.levels = self.levels, level
+        if self.kick:
+            self._throw(level, before)
+            return self.levels, self.caps
         # A bar that reaches its cap pushes it up and restarts the hold.
         pushed = level >= self.caps
         self.caps = np.where(pushed, level, self.caps)
         self.held = np.where(pushed, HOLD, self.held - 1)
-        self.falling = np.where(self.held > 0, 0, self.falling + 0.004)
+        self.falling = np.where(self.held > 0, 0, self.falling + GRAVITY)
         self.caps = np.maximum(level, self.caps - self.falling)
         return self.levels, self.caps
+
+    def _throw(self, level, before) -> None:
+        np = self.np
+        pushed = level >= self.caps
+        speed = np.minimum(np.maximum(level - before, 0), self.kick)
+        self.lift = np.where(pushed, np.maximum(self.lift, speed), self.lift - GRAVITY)
+        caps = np.where(pushed, level, self.caps + self.lift)
+        # Back down on its bar: it rides there until the bar throws it again.
+        self.lift = np.where(~pushed & (caps <= level), 0, self.lift)
+        self.caps = np.clip(np.maximum(caps, level), 0, 1)
+        self.lift = np.where(self.caps >= 1, np.minimum(self.lift, 0), self.lift)
