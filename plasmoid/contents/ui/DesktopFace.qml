@@ -561,7 +561,7 @@ Item {
         width: visBand.width
         height: visBand.height
         visible: visBand.visible
-        bars: Math.max(12, Math.min(96, Math.round(width / face.metaSize)))
+        bars: Math.max(24, Math.min(192, Math.round(width / (face.metaSize * 0.5))))
         color: face.ink
         url: face.applet.visEndpoint
         // Only while there's music to see: off, paused or hidden, and the

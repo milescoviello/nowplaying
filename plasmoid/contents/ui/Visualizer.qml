@@ -25,8 +25,6 @@ Item {
     // restarted on a new port. Whoever set it should look again.
     signal needEndpoint()
 
-    property var levels: []
-    property var caps: []
     readonly property bool streaming: _xhr !== null
 
     property var _xhr: null
@@ -70,20 +68,28 @@ Item {
         _xhr = xhr;
     }
 
-    // The newest whole line, if it's new; the rest went by unseen.
+    // The newest whole line, if it's new; the rest went by unseen. Set on
+    // each bar directly: sixty times a second, a fresh array for every bar's
+    // bindings to pick through costs more than the drawing.
     function _read(text) {
         var end = text.lastIndexOf("\n");
         if (end < 0 || end <= _seen) return;
         var start = text.lastIndexOf("\n", end - 1) + 1;
         _seen = end;
-        if (end - start !== bars * 2) return;
-        var l = new Array(bars), c = new Array(bars);
+        if (end - start !== bars * 2 || slots.count !== bars) return;
         for (var i = 0; i < bars; i++) {
-            l[i] = (text.charCodeAt(start + i) - 48) / 63;
-            c[i] = (text.charCodeAt(start + bars + i) - 48) / 63;
+            var slot = slots.itemAt(i);
+            slot.level = (text.charCodeAt(start + i) - 48) / 63;
+            slot.cap = (text.charCodeAt(start + bars + i) - 48) / 63;
         }
-        levels = l;
-        caps = c;
+    }
+
+    function _settle() {
+        for (var i = 0; i < slots.count; i++) {
+            var slot = slots.itemAt(i);
+            slot.level = 0;
+            slot.cap = 0;
+        }
     }
 
     onActiveChanged: {
@@ -93,8 +99,7 @@ Item {
             _hangUp();
             retry.stop();
             // Let the bars sink rather than freeze where they were.
-            levels = [];
-            caps = [];
+            _settle();
         }
     }
     onUrlChanged: if (active) _connect()
@@ -108,6 +113,7 @@ Item {
     }
 
     Repeater {
+        id: slots
         model: vis.bars
 
         delegate: Item {
@@ -115,8 +121,9 @@ Item {
             required property int index
 
             readonly property real pitch: vis.width / vis.bars
-            readonly property real level: vis.levels.length > index ? vis.levels[index] : 0
-            readonly property real cap: vis.caps.length > index ? vis.caps[index] : 0
+            // Set from the feed, by _read.
+            property real level: 0
+            property real cap: 0
             readonly property real capH: Math.max(2, Math.round(vis.height * 0.03))
 
             x: index * pitch + pitch * 0.18

@@ -31,7 +31,7 @@ STREAM_SECONDS = 2.0
 # Keep listening this long after the last viewer goes, to ride over those
 # reconnects without restarting parec each time.
 LINGER_SECONDS = 3.0
-MIN_BARS, MAX_BARS = 4, 128
+MIN_BARS, MAX_BARS = 4, 192
 # On the desktop the caps bounce: thrown up by the bar that hits them, at up
 # to this much a frame, where the TUI's hold and drop. Enough for an arc a
 # good way above the bar, not enough to fling a quiet one to the top.
