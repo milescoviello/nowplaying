@@ -389,7 +389,10 @@ class TUI:
         self.editing = False
         # Lyrics being synced, from s until saved or left.
         self.draft: editor.Draft | None = None
-        self.sync_wrapped: tuple = (None, [], [])
+        # The draft's lines wrapped to the width: (the draft itself, how they
+        # were wrapped, rows, the row each line starts on). The draft, not
+        # its id, which the next one can be given once this one is gone.
+        self.sync_wrapped: tuple = (None, None, [], [])
         # A seek asked of the player while syncing, (where to, when), until
         # the daemon's position gets there: a tap before then would be wrong.
         self.seeking: tuple[float, float] | None = None
@@ -518,16 +521,16 @@ class TUI:
                                      "It isn't playing now. Play it again to carry "
                                      "on, or esc to leave.", width, height)
         lines = d.texts if self.original else d.shown
-        made = (id(d), self.original, width)
-        if self.sync_wrapped[0] != made:
+        made = (self.original, width)
+        if self.sync_wrapped[0] is not d or self.sync_wrapped[1] != made:
             rows: list[Text] = []
             starts = []
             for text in lines:
                 starts.append(len(rows))
                 rows.extend(Text(text or "♪").wrap(console, max(1, width - GUTTER))
                             or [Text("")])
-            self.sync_wrapped = (made, rows, [*starts, len(rows)])
-        _, rows, starts = self.sync_wrapped
+            self.sync_wrapped = (d, made, rows, [*starts, len(rows)])
+        _, _, rows, starts = self.sync_wrapped
         mark = min(d.cursor, len(lines) - 1)
         top = round((starts[mark] + starts[mark + 1]) / 2 - height * FOLLOW_AT)
         top = max(0, min(top, len(rows) - height))
@@ -938,6 +941,8 @@ class TUI:
             return
         self.help = False
         self.seeking = None
+        # A second press the last draft was waiting for isn't this one's.
+        self.confirm = ("", 0.0)
         self._say("tap enter as each line starts")
 
     def _sync_key(self, key: str) -> bool:
