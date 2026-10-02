@@ -1,4 +1,5 @@
-"""Lyrics of your own: written or fixed in your editor.
+"""Lyrics of your own: written or fixed in your editor, and synced to the
+track by tapping each line in as it's sung.
 
 Saved to the file the daemon names for the track (State.lyrics_file), which
 it reads in place of LRCLIB from then on, and picks up within a tick of the
@@ -12,6 +13,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import lyrics as lyrics_mod
@@ -135,3 +137,118 @@ def _save(path: Path, text: str) -> str:
     except OSError as exc:
         raise LyricsError(f"couldn't save {path.name}: {exc.strerror}") from None
     return f"saved {path.name}"
+
+
+def _stanzas(lines: list[str]) -> list[int]:
+    """Which lines of a plain sheet to tap: every one with words, and a single
+    blank between stanzas, for the gap a break in the singing leaves."""
+    keep: list[int] = []
+    for i, line in enumerate(lines):
+        if line.strip():
+            if keep and not lines[i - 1].strip():
+                keep.append(i - 1)
+            keep.append(i)
+    return keep
+
+
+@dataclass
+class Draft:
+    """Lyrics being synced to the track: each line's start, or None until
+    it's tapped in. The cursor is the line the next tap is for, and is past
+    the end once every line has been."""
+    key: str                # the track it's for
+    path: Path
+    tags: dict[str, str]
+    texts: list[str]        # as saved: in their own script
+    shown: list[str]        # as read: in Latin letters, if transliterated
+    times: list[float | None]
+    cursor: int = 0
+    # Each tap's line and the time it had before, so taps can be taken back.
+    taps: list[tuple[int, float | None]] = field(default_factory=list)
+    shifted: float = 0.0    # how far every line has been moved, all told
+    changed: bool = False
+
+    @classmethod
+    def start(cls, s: State, pos: float) -> Draft:
+        """A draft of the lyrics showing, its cursor on the next line to be
+        sung: timings kept, for lyrics that only need some retiming."""
+        path = target(s)
+        if s.lyrics:
+            texts = [text for _, text in original(s)]
+            shown = [text for _, text in s.lyrics]
+            times: list[float | None] = [t for t, _ in s.lyrics]
+        else:
+            raw = (s.lyrics_plain_original or s.lyrics_plain).splitlines()
+            latin = s.lyrics_plain.splitlines()
+            if len(latin) != len(raw):
+                latin = raw
+            keep = _stanzas(raw)
+            texts = [raw[i].strip() for i in keep]
+            shown = [latin[i].strip() for i in keep]
+            times = [None] * len(texts)
+        if not texts:
+            raise LyricsError("no lyrics to sync: write them first")
+        cursor = next((i for i, t in enumerate(times) if t is None or t > pos), len(times))
+        return cls(key=s.key, path=path, tags=tags(s), texts=texts, shown=shown,
+                   times=times, cursor=cursor)
+
+    def tap(self, pos: float) -> None:
+        """The cursor's line starts now."""
+        if self.cursor >= len(self.times):
+            return
+        self.taps.append((self.cursor, self.times[self.cursor]))
+        self.times[self.cursor] = pos
+        self.cursor += 1
+        self.changed = True
+
+    def untap(self) -> None:
+        """Take the last tap back, and the cursor to its line to tap again."""
+        if not self.taps:
+            self.move(-1)
+            return
+        line, before = self.taps.pop()
+        self.times[line] = before
+        self.cursor = line
+
+    def move(self, step: int) -> None:
+        self.cursor = max(0, min(len(self.times), self.cursor + step))
+
+    def shift(self, seconds: float) -> None:
+        """Every line timed so far that much later (earlier, if negative)."""
+        def moved(t: float | None) -> float | None:
+            return None if t is None else max(0.0, t + seconds)
+        self.times = [moved(t) for t in self.times]
+        self.taps = [(line, moved(before)) for line, before in self.taps]
+        self.shifted = round(self.shifted + seconds, 3)
+        self.changed = True
+
+    def untimed(self) -> int:
+        """Lines with words in them still to tap. A gap can go untapped."""
+        return sum(1 for t, text in zip(self.times, self.texts) if t is None and text)
+
+    def current(self, pos: float) -> int:
+        """The line its timings say is being sung at `pos`, or -1."""
+        best = -1
+        for i, t in enumerate(self.times):
+            if t is not None and t <= pos:
+                best = i
+        return best
+
+    def lrc(self) -> str:
+        lines: list[tuple[float, str]] = []
+        last = 0.0
+        for t, text in zip(self.times, self.texts):
+            if t is None:
+                continue
+            # A line retimed past the next keeps its place in the sheet.
+            last = max(last, t)
+            lines.append((last, text))
+        return lyrics_mod.format_lrc(lines, self.tags)
+
+    def save(self) -> str:
+        left = self.untimed()
+        if left:
+            raise LyricsError(f"{left} line{'s'[:left != 1]} still to tap")
+        said = _save(self.path, self.lrc())
+        self.changed = False
+        return said

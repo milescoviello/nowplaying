@@ -78,12 +78,31 @@ KEYS = (
     ("h", "pin the homelab readout"),
     ("v", "visualizer (listens to the speaker output)"),
     ("e", "write the lyrics, or fix them, in $EDITOR"),
+    ("s", "sync the lyrics to the track, a tap a line"),
     ("↑↓ j k", "scroll the lyrics"),
     ("PgUp PgDn", "a page at a time"),
     ("Home End", "to the top or bottom"),
     ("?", "this list"),
     ("q", "quit"),
 )
+# While syncing: enter as each line starts, the marker moving on to the next.
+SYNC_KEYS = (
+    ("enter", "the marked line starts now"),
+    ("backspace", "take the last tap back"),
+    ("↑↓ j k", "move the marker"),
+    ("← →", "the track back or on 5 s"),
+    ("0", "the track back to the start"),
+    ("- +", "every line a tenth of a second earlier or later"),
+    ("w", "save"),
+    ("esc", "leave without saving"),
+)
+# Past the daemon's resync tolerance, so a seek is believed on its next poll.
+SEEK_STEP = 5.0
+SHIFT_STEP = 0.1
+# A seek not in the daemon's position by then never will be; taps go ahead.
+SEEK_SECONDS = 3.0
+# The marker, a line's timing and a gap, before each line while syncing.
+GUTTER = 11
 
 # Escape sequences (arrows, function keys) are read whole, so their trailing
 # letters can't be misread as key presses; the ones not named here are dropped.
@@ -93,7 +112,10 @@ _NAMED = {
     "\x1b[5~": "pgup", "\x1b[6~": "pgdn",
     "\x1b[H": "home", "\x1bOH": "home", "\x1b[1~": "home", "\x1b[7~": "home",
     "\x1b[F": "end", "\x1bOF": "end", "\x1b[4~": "end", "\x1b[8~": "end",
+    "\x1b[D": "left", "\x1bOD": "left", "\x1b[C": "right", "\x1bOC": "right",
 }
+_PLAIN = {"\x1b": "esc", "\r": "enter", "\n": "enter", "\x7f": "backspace",
+          "\x08": "backspace"}
 
 
 def _keys(data: str) -> list[str]:
@@ -105,7 +127,7 @@ def _keys(data: str) -> list[str]:
                 keys.append(_NAMED[m.group()])
             i = m.end()
             continue
-        keys.append("esc" if data[i] == "\x1b" else data[i])
+        keys.append(_PLAIN.get(data[i], data[i]))
         i += 1
     return keys
 
@@ -150,6 +172,12 @@ def _fmt(seconds: float) -> str:
     t = max(0, int(seconds))
     h, m, s = t // 3600, t // 60 % 60, t % 60
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _stamp(seconds: float) -> str:
+    """A line's timing, to the hundredth: 1:02.34."""
+    cs = round(seconds * 100)
+    return f"{cs // 6000}:{cs // 100 % 60:02d}.{cs % 100:02d}"
 
 
 def _cap(key: str, label: str, accent: str, style: StyleType = "") -> Text:
@@ -356,6 +384,14 @@ class TUI:
         self.help = False
         # The lyrics are to be opened in the editor before the next frame.
         self.editing = False
+        # Lyrics being synced, from s until saved or left.
+        self.draft: editor.Draft | None = None
+        self.sync_wrapped: tuple = (None, [], [])
+        # A seek asked of the player while syncing, (where to, when), until
+        # the daemon's position gets there: a tap before then would be wrong.
+        self.seeking: tuple[float, float] | None = None
+        # A key that wants pressing again to do what it would lose, and until when.
+        self.confirm: tuple[str, float] = ("", 0.0)
         self.accent = PLAIN
         # Off until asked for: it listens, and lights the recording indicator.
         self.visualizer = False
@@ -468,6 +504,62 @@ class TUI:
         top = self._settle(len(rows), self.scroll or 0, height)
         return rows[top:top + height]
 
+    def _syncing(self, console: Console, s: State, pos: float,
+                 width: int, height: int) -> list[Text]:
+        """The lyrics being synced, each line after its timing, followed by
+        the marker on the line to tap next rather than by the music."""
+        d = self.draft
+        self.room = height
+        if s.key != d.key:
+            return self._placeholder(console, f"Syncing {d.tags['ti']}",
+                                     "It isn't playing now. Play it again to carry "
+                                     "on, or esc to leave.", width, height)
+        lines = d.texts if self.original else d.shown
+        made = (id(d), self.original, width)
+        if self.sync_wrapped[0] != made:
+            rows: list[Text] = []
+            starts = []
+            for text in lines:
+                starts.append(len(rows))
+                rows.extend(Text(text or "♪").wrap(console, max(1, width - GUTTER))
+                            or [Text("")])
+            self.sync_wrapped = (made, rows, [*starts, len(rows)])
+        _, rows, starts = self.sync_wrapped
+        mark = min(d.cursor, len(lines) - 1)
+        top = round((starts[mark] + starts[mark + 1]) / 2 - height * FOLLOW_AT)
+        top = max(0, min(top, len(rows) - height))
+        # What the timings so far would show: a sync can be watched as it goes.
+        sung = d.current(pos + LEAD_IN)
+        marked = Style(color=self.accent, bold=True)
+        out = []
+        for i, t in enumerate(d.times):
+            first, last = max(starts[i], top), min(starts[i + 1], top + height)
+            if first >= last:
+                continue
+            style = (marked if i == d.cursor else SUNG if i == sung
+                     else SHEET if t is not None else QUIET)
+            for r in range(first, last):
+                gutter = " " * GUTTER
+                if r == starts[i]:
+                    timing = _stamp(t) if t is not None else "·"
+                    gutter = ("▸ " if i == d.cursor else "  ") + timing.rjust(GUTTER - 4) + "  "
+                out.append(Text.assemble((gutter, marked if i == d.cursor else QUIET),
+                                         (rows[r].plain, style), no_wrap=True))
+        return out
+
+    def _sync_keys(self) -> list[Text]:
+        d, accent = self.draft, self.accent
+        left = d.untimed()
+        return [
+            Text("   ").join([_cap("enter", "tap", accent), _cap("backspace", "undo", accent),
+                             _cap("↑↓", "line", accent), _cap("←→", "5 s", accent),
+                             _cap("0", "from the top", accent)]),
+            Text("   ").join([_cap("-", "earlier", accent), _cap("+", "later", accent),
+                             _cap("w", "save", accent), _cap("esc", "leave", accent)]),
+            Text(f"{left} line{'s'[:left != 1]} to tap" if left
+                 else "Every line tapped: w saves them.", style=QUIET),
+        ]
+
     def _settle(self, total: int, top: int, height: int) -> int:
         """Clamp the sheet's top row to what it has, and note it for scrolling."""
         top = max(0, min(top, total - height))
@@ -503,6 +595,10 @@ class TUI:
         grid.add_column(no_wrap=True, style=Style(color=self.accent, bold=True))
         grid.add_column()
         for key, what in KEYS:
+            grid.add_row(key, what)
+        grid.add_row("", "")
+        grid.add_row("", Text("While syncing", style=TITLE))
+        for key, what in SYNC_KEYS:
             grid.add_row(key, what)
         grid.add_row("", "")
         for n, (_, label, hint) in enumerate(SOURCES, 1):
@@ -587,9 +683,12 @@ class TUI:
         return [Text("")] * max(0, (height - len(rows)) // 2) + rows
 
     def _view(self, s: State, link: str) -> str:
-        """What the body shows: help | idle | no-idle | synced | plain | message."""
+        """What the body shows: help | sync | idle | no-idle | synced | plain | message."""
         if self.help:
             return "help"
+        # Syncing holds the view, whatever the idle display would do.
+        if self.draft is not None and link == "up":
+            return "sync"
         # The daemon decides when the idle display takes over (no player, or
         # paused long enough); the pin forces it.
         if link == "up" and (s.idle_active or self.pinned):
@@ -639,6 +738,8 @@ class TUI:
         def sheet(console: Console, width: int, height: int) -> list[RenderableType]:
             if view == "help":
                 return self._help()
+            if view == "sync":
+                return self._syncing(console, s, pos, width, height)
             if view == "idle":
                 # Only shout when something is actually wrong.
                 return self._placeholder(console, s.idle_line1, s.idle_line2,
@@ -674,13 +775,16 @@ class TUI:
         # someone reaches for a different source. An older daemon doesn't
         # publish its source.
         cost = None
-        if link == "up" and s.source_pref:
+        # Syncing needs the room for its keys more than the source switch.
+        if link == "up" and s.source_pref and view != "sync":
             sources, cost = self._sources(s.source_pref, s.vis_listening)
             buttons.append(sources)
         gap = 8
         # One row when they fit side by side, inside the border and padding.
         if sum(b.cell_len for b in buttons) + gap * (len(buttons) - 1) <= width - 6:
             buttons = [Text(" " * gap).join(buttons)] if buttons else []
+        if view == "sync":
+            buttons += self._sync_keys()
         for row in buttons:
             row.justify = "center"
             footer.append(row)
@@ -709,9 +813,11 @@ class TUI:
         if time.monotonic() < self.flash_until:
             return Text(self.flash, style="#e5c07b")
         hints = []
-        if view == "synced" and _has_original(s):
+        if self._scripts(s, view):
             hints.append(("o", "Latin letters" if self.original else "original script"))
-        if self.pinned:
+        if view == "sync":
+            pass   # its keys are in the footer
+        elif self.pinned:
             hints.append(("h", "unpin"))
         elif link == "up" and s.idle_kind:
             hints.append(("h", "homelab"))
@@ -719,6 +825,8 @@ class TUI:
             hints.append(("v", "hide visualizer" if self.visualizer else "visualizer"))
             if s.lyrics_file:
                 hints.append(("e", "edit lyrics"))
+                if view != "message":
+                    hints.append(("s", "sync"))
         hints += [("?", "close" if self.help else "keys"), ("q", "quit")]
         # Styled piece by piece: the panel lays a subtitle's own style over
         # all of it, which would wash out the keys.
@@ -728,26 +836,27 @@ class TUI:
     def _say(self, text: str) -> None:
         self.flash, self.flash_until = text, time.monotonic() + FLASH_SECONDS
 
-    def _control(self, verb: str) -> None:
+    def _control(self, *command: str) -> bool:
         """Hand a transport command to playerctl. The daemon notices the
         change on its next poll, so no state is touched here."""
         with self.lock:
             s, link = self.state, self._link()
         if link != "up":
             self._say("the daemon is not running")
-            return
+            return False
         if not s.player:
             self._say("nothing local to control")
-            return
+            return False
         try:
-            proc = subprocess.Popen(["playerctl", "--player", s.player, verb],
+            proc = subprocess.Popen(["playerctl", "--player", s.player, *command],
                                     stdin=subprocess.DEVNULL,
                                     stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL)
         except OSError:
             self._say("playerctl is not installed")
-            return
+            return False
         threading.Thread(target=proc.wait, daemon=True).start()   # reap it
+        return True
 
     def _pick_source(self, value: str) -> None:
         """Save the pick where the daemon looks for it, as the popup does:
@@ -813,10 +922,132 @@ class TUI:
             live.start()
         self._say(said)
 
+    def _start_sync(self) -> None:
+        with self.lock:
+            s, link = self.state, self._link()
+        if link != "up":
+            self._say("the daemon is not running")
+            return
+        try:
+            self.draft = editor.Draft.start(s, s.position())
+        except editor.LyricsError as exc:
+            self._say(str(exc))
+            return
+        self.help = False
+        self.seeking = None
+        self._say("tap enter as each line starts")
+
+    def _sync_key(self, key: str) -> bool:
+        """Do what `key` means while syncing; False for the keys that mean
+        what they always do."""
+        d = self.draft
+        page = max(1, self.room // 2)
+        moves = {"up": -1, "k": -1, "down": 1, "j": 1, "pgup": -page, "pgdn": page,
+                 "home": -len(d.times), "g": -len(d.times),
+                 "end": len(d.times), "G": len(d.times)}
+        if key == "enter":
+            self._tap()
+        elif key == "backspace":
+            d.untap()
+        elif key in moves:
+            d.move(moves[key])
+        elif key in ("left", "right"):
+            self._seek(step=SEEK_STEP if key == "right" else -SEEK_STEP)
+        elif key == "0":
+            self._seek(step=-math.inf)
+        elif key in ("-", "_", "+", "="):
+            d.shift(-SHIFT_STEP if key in ("-", "_") else SHIFT_STEP)
+            self._say(f"every line {abs(d.shifted):.1f} s "
+                      f"{'later' if d.shifted > 0 else 'earlier'}" if d.shifted
+                      else "every line back where it was")
+        elif key == "w":
+            try:
+                said = d.save()
+            except editor.LyricsError as exc:
+                self._say(str(exc))
+                return True
+            self.draft = None
+            self._say(said)
+        elif key in ("esc", "s"):
+            if not d.changed or self._twice(key, f"not saved: w saves it, {key} again drops it"):
+                self.draft = None
+        elif key in ("q", "Q"):
+            if not d.changed or self._twice("q", "not saved: w saves it, q again quits"):
+                self.quit = True
+        elif key == "e":
+            self._say("save the sync or leave it first")
+        else:
+            return False
+        return True
+
+    def _twice(self, key: str, warning: str) -> bool:
+        """Whether `key` is pressed again while its warning shows; the
+        first press only gives the warning."""
+        pending, until = self.confirm
+        if pending == key and time.monotonic() < until:
+            self.confirm = ("", 0.0)
+            return True
+        self.confirm = (key, time.monotonic() + FLASH_SECONDS)
+        self._say(warning)
+        return False
+
+    def _tap(self) -> None:
+        with self.lock:
+            s, link = self.state, self._link()
+        if link != "up" or s.key != self.draft.key:
+            self._say("that track isn't playing")
+            return
+        if not self._settled(s):
+            self._say("waiting for the player to get there")
+            return
+        self.draft.tap(s.position())
+
+    def _seek(self, step: float) -> None:
+        """Move the track `step` seconds, to tap a stretch again. By so much
+        rather than to a position: some players (VLC) only take the first."""
+        with self.lock:
+            s = self.state
+        if s.key != self.draft.key:
+            self._say("that track isn't playing")
+            return
+        pos = s.position()
+        if not self._settled(s):
+            # Seeking already, and the daemon's position is from before:
+            # this one goes on from where that one is landing.
+            target, since = self.seeking
+            pos = target + (time.monotonic() - since if s.playing else 0.0)
+        where = max(0.0, pos + step)
+        if s.duration > 0:
+            where = min(where, s.duration)
+        if where == pos:
+            return
+        by = where - pos
+        if self._control("position", f"{abs(by):.3f}{'+' if by > 0 else '-'}"):
+            self.seeking = (where, time.monotonic())
+
+    def _settled(self, s: State) -> bool:
+        """The daemon's position has caught up with the last seek: the player
+        reports a seek on its next poll, up to a second later."""
+        if self.seeking is None:
+            return True
+        where, since = self.seeking
+        elapsed = time.monotonic() - since
+        if abs(s.position() - (where + (elapsed if s.playing else 0.0))) < 1.0 \
+                or elapsed > SEEK_SECONDS:
+            self.seeking = None
+            return True
+        return False
+
+    def _scripts(self, s: State, view: str) -> bool:
+        """The lyrics showing come in their own script too, line for line."""
+        if view == "sync":
+            return self.draft.texts != self.draft.shown
+        return view == "synced" and _has_original(s)
+
     def _toggle_original(self) -> None:
         with self.lock:
             s, link = self.state, self._link()
-        if self._view(s, link) != "synced" or not _has_original(s):
+        if not self._scripts(s, self._view(s, link)):
             self._say("no original script for this track")
             return
         self.original = not self.original
@@ -837,7 +1068,11 @@ class TUI:
         self.scrolled_at = time.monotonic()
 
     def _key(self, key: str) -> None:
-        if key in ("q", "Q"):
+        if key == "?" or (key == "esc" and self.help):
+            self.help = not self.help
+        elif self.draft is not None and self._sync_key(key):
+            return
+        elif key in ("q", "Q"):
             self.quit = True
         elif key == " ":
             self._control("play-pause")
@@ -845,8 +1080,6 @@ class TUI:
             self._control("next")
         elif key == "p":
             self._control("previous")
-        elif key == "?" or (key == "esc" and self.help):
-            self.help = not self.help
         elif key == "h":
             self.pinned = not self.pinned
         elif key == "v":
@@ -855,6 +1088,8 @@ class TUI:
             self._toggle_original()
         elif key == "e":
             self._ask_edit()
+        elif key == "s":
+            self._start_sync()
         elif key in ("1", "2", "3", "4"):
             self._pick_source(SOURCES[int(key) - 1][0])
         elif key in ("up", "down", "pgup", "pgdn", "home", "end", "j", "k", "g", "G"):
