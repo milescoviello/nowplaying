@@ -512,8 +512,9 @@ class Daemon:
 
         if resync:
             s.anchor_pos = now.position
-            # A settling reading doesn't open the window again, so it closes.
-            if not settling:
+            # A settling reading doesn't open the window again, so it closes;
+            # nor does a checkpoint, which never settles.
+            if not settling and not checkpointed:
                 self._settle_until = wall + config.SETTLE_SECONDS
         else:
             s.anchor_pos = predicted
