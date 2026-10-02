@@ -252,7 +252,10 @@ class Draft:
         if left:
             raise LyricsError(f"{left} line{'s'[:left != 1]} still to tap")
         # Beside a plain .txt rather than over it: the .lrc wins, and the
-        # plain sheet it was synced from stays as it was.
-        said = _save(self.path.with_suffix(".lrc"), self.lrc())
+        # plain sheet it was synced from stays as it was. A .LRC is one.
+        path = self.path
+        if path.suffix.lower() != ".lrc":
+            path = path.with_suffix(".lrc")
+        said = _save(path, self.lrc())
         self.changed = False
         return said
