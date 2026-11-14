@@ -564,9 +564,10 @@ Item {
         bars: Math.max(24, Math.min(192, Math.round(width / (face.metaSize * 0.5))))
         color: face.ink
         url: face.applet.visEndpoint
-        // Only while there's music to see: off, paused or hidden, and the
-        // daemon stops listening a few seconds later.
+        // Only while there's music to see: off, paused, hidden or under a
+        // window, and the daemon stops listening a few seconds later.
         active: visible && face.applet.playing && !face.applet.stale
+            && !face.applet.covered
         onNeedEndpoint: face.applet.refreshVisEndpoint()
 
         layer.enabled: face.effects && face.overWallpaper

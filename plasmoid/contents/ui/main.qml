@@ -344,11 +344,26 @@ PlasmoidItem {
                      : m + ":" + ss;
     }
 
+    // Desktop form only: a window lies over the whole widget, so nothing it
+    // draws can be seen. The line timer and the visualizer pause meanwhile
+    // (CoverWatch.qml says why).
+    readonly property bool covered: coverWatch.item ? coverWatch.item.covered : false
+    Loader {
+        id: coverWatch
+        active: root.onDesktop
+        sourceComponent: CoverWatch {
+            target: root
+            screenGeometry: Plasmoid.containment ? Plasmoid.containment.screenGeometry
+                                                 : Qt.rect(0, 0, 0, 0)
+        }
+    }
+
     Timer {  // drives the current line, the slide and the sideways creep
         interval: 20
         // Also while the popup is open, or on the desktop: the progress bar
         // needs a moving position even when there are no lyrics to time.
-        running: root.playing && !root.stale
+        // On a covered desktop it rests; restarting catches the line up.
+        running: root.playing && !root.stale && !root.covered
             && (root.lyrics.length > 0 || root.expanded || root.onDesktop)
         repeat: true
         triggeredOnStart: true
